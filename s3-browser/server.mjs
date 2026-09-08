@@ -178,9 +178,9 @@ async function handleMove(req, res) {
         return json(res, { moved: 0, created: true });
       }
 
-      newKeys = sourceKeys.map((key) =>
-        key === source ? destination + folderName + "/" : destination + key.slice(source.length)
-      );
+      // Keep the folder name: album/Heavy Weather/<relative path>
+      const newPrefix = destination + folderName + "/";
+      newKeys = sourceKeys.map((key) => newPrefix + key.slice(source.length));
     } else {
       const fileName = source.split("/").pop();
       const targetKey = destination + fileName;

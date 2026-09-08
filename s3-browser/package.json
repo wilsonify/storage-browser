@@ -1,0 +1,12 @@
+{
+  "name": "s3-browser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.800.0",
+    "@aws-sdk/credential-providers": "^3.800.0"
+  }
+}

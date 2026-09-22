@@ -699,12 +699,6 @@
             if (!state.dragSources.length) return;
 
             const destination = ensureFolderPrefix(item.path);
-            const invalid = state.dragSources.find((source) => source.endsWith("/") && destination.startsWith(source));
-            if (invalid) {
-              setError("Cannot move a folder into itself.");
-              return;
-            }
-
             await enqueueOperation("move", {
               bucket: state.currentBucket,
               sources: state.dragSources,
@@ -1014,7 +1008,21 @@
           const completed = p.completed || 0;
           const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
           const summary = op.type.toUpperCase();
-          const details = op.status === "failed" && op.error ? op.error : `${p.message || ""}${total ? ` (${completed}/${total}, ${pct}%)` : ""}`;
+            let details = "";
+            if (op.status === "failed" && op.error) {
+              details = op.error;
+            } else {
+              const progressText = total ? ` (${completed}/${total}, ${pct}%)` : "";
+              details = `${p.message || ""}${progressText}`;
+            }
+
+            const skipped = op.result?.skipped;
+            if (skipped) {
+              const skippedCount = (skipped.destinationSelf?.length || 0) + (skipped.recursive?.length || 0) + (skipped.redundantNested?.length || 0);
+              if (skippedCount > 0) {
+                details = `${details} | Skipped ${skippedCount}`.trim();
+              }
+            }
           return `<div class="op-row ${op.status}">
             <div>
               <div><strong>${summary}</strong></div>

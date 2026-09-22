@@ -515,19 +515,25 @@
     async function selectBucket(name) {
       state.currentBucket = name;
       state.currentPrefix = "";
+      resetViewState();
+      syncActiveBucket();
+      pushHistory("");
+      await loadObjects(false);
+    }
+
+    function resetViewState() {
       state.items = [];
       state.continuationToken = null;
       state.allLoaded = false;
       state.selected.clear();
       state.focusedPath = null;
       state.anchorPath = null;
+    }
 
+    function syncActiveBucket() {
       $$(".bucket-item").forEach((el) => {
-        el.classList.toggle("active", el.dataset.bucket === name);
+        el.classList.toggle("active", el.dataset.bucket === state.currentBucket);
       });
-
-      pushHistory("");
-      await loadObjects(false);
     }
 
     async function loadObjects(append = false) {
@@ -765,10 +771,10 @@
       state.historyIndex -= 1;
       const point = state.history[state.historyIndex];
       if (!point) return;
-      if (point.bucket !== state.currentBucket) {
-        await selectBucket(point.bucket);
-      }
+      state.currentBucket = point.bucket;
       state.currentPrefix = point.prefix;
+      resetViewState();
+      syncActiveBucket();
       renderNavState();
       await loadObjects(false);
     }
@@ -778,10 +784,10 @@
       state.historyIndex += 1;
       const point = state.history[state.historyIndex];
       if (!point) return;
-      if (point.bucket !== state.currentBucket) {
-        await selectBucket(point.bucket);
-      }
+      state.currentBucket = point.bucket;
       state.currentPrefix = point.prefix;
+      resetViewState();
+      syncActiveBucket();
       renderNavState();
       await loadObjects(false);
     }
@@ -1015,15 +1021,27 @@
               <div class="op-meta">${escHtml(details || statusText(op))}</div>
             </div>
             <div class="op-status ${op.status}">${escHtml(op.status)}</div>
-            <button class="retry-btn" data-op-id="${escHtml(op.id)}">Retry</button>
+              <div>
+                <button class="retry-btn" data-op-id="${escHtml(op.id)}">Retry</button>
+                <button class="retry-btn cancel-btn" data-op-id="${escHtml(op.id)}" style="display:${op.status === "queued" || op.status === "running" ? "inline-block" : "none"}">Cancel</button>
+              </div>
           </div>`;
         })
         .join("");
 
       list.querySelectorAll(".retry-btn").forEach((btn) => {
+        if (btn.classList.contains("cancel-btn")) return;
         btn.addEventListener("click", async () => {
           const opId = btn.dataset.opId;
           await api(`/api/operations/${encodeURIComponent(opId)}/retry`, { method: "POST" });
+          await loadOperations();
+        });
+      });
+
+      list.querySelectorAll(".cancel-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const opId = btn.dataset.opId;
+          await api(`/api/operations/${encodeURIComponent(opId)}/cancel`, { method: "POST" });
           await loadOperations();
         });
       });

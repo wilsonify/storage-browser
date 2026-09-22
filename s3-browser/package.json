@@ -6,6 +6,7 @@
     "start": "node server.mjs",
     "test": "node --test",
     "clean": "node scripts/clean.mjs",
+    "timeout:probe": "node scripts/timeout-probe.mjs",
     "package:win": "npm run clean && node scripts/package-win.mjs",
     "package": "npm run package:win"
   },

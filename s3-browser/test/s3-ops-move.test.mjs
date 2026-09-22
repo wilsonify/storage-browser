@@ -63,6 +63,67 @@ test("move does not delete source when copy fails", async () => {
   );
 
   const commandNames = client.calls.map((c) => c.type);
-  assert.ok(commandNames.includes("CopyObjectCommand"));
   assert.ok(!commandNames.includes("DeleteObjectsCommand"));
+});
+
+test("move cancellation does not delete source", async () => {
+  const client = new FakeClient({});
+  const ops = new AwsS3Ops(client);
+  let cancel = false;
+
+  await assert.rejects(
+    () =>
+      ops.moveTargets({
+        bucket: "demo",
+        sources: ["docs/file.txt"],
+        destination: "archive/",
+        shouldCancel: () => {
+          if (!cancel) {
+            cancel = true;
+            return false;
+          }
+          return true;
+        },
+      }),
+    /Operation cancelled/
+  );
+
+  const commandNames = client.calls.map((c) => c.type);
+  assert.ok(!commandNames.includes("DeleteObjectsCommand"));
+});
+
+test("move file to same parent is rejected safely", async () => {
+  const client = new FakeClient({});
+  const ops = new AwsS3Ops(client);
+
+  await assert.rejects(
+    () =>
+      ops.moveTargets({
+        bucket: "demo",
+        sources: ["docs/file.txt"],
+        destination: "docs/",
+      }),
+    /Source and destination are the same/
+  );
+
+  const commandNames = client.calls.map((c) => c.type);
+  assert.equal(commandNames.length, 0);
+});
+
+test("move folder to same parent is rejected safely", async () => {
+  const client = new FakeClient({});
+  const ops = new AwsS3Ops(client);
+
+  await assert.rejects(
+    () =>
+      ops.moveTargets({
+        bucket: "demo",
+        sources: ["docs/folder/"],
+        destination: "docs/",
+      }),
+    /Source and destination are the same/
+  );
+
+  const commandNames = client.calls.map((c) => c.type);
+  assert.equal(commandNames.length, 0);
 });

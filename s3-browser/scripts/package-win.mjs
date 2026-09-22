@@ -12,6 +12,7 @@ const bundlePath = join(buildDir, "app.cjs");
 const seaConfigPath = join(buildDir, "sea-config.json");
 const seaBlobPath = join(buildDir, "sea-prep.blob");
 const outputExePath = join(distDir, "s3-browser.exe");
+const appIconIcoPath = join(rootDir, "assets", "s3_browser_icon.ico");
 
 function runOrThrow(command, args, useShell = false) {
   const result = spawnSync(command, args, {
@@ -39,6 +40,11 @@ function postjectCommandArgs() {
   return [join(rootDir, "node_modules", ".bin", "postject")];
 }
 
+function rceditCommandArgs() {
+  if (process.platform !== "win32") return null;
+  return [join(rootDir, "node_modules", "rcedit", "bin", "rcedit.exe")];
+}
+
 const major = Number.parseInt(process.versions.node.split(".")[0], 10);
 if (!Number.isFinite(major) || major < 20) {
   throw new Error(`Node 20+ is required for SEA packaging. Current: ${process.version}`);
@@ -62,6 +68,8 @@ const seaConfig = {
   disableExperimentalSEAWarning: true,
   assets: {
     "index.html": join(rootDir, "index.html"),
+    "s3_browser_icon.svg": join(rootDir, "assets", "s3_browser_icon.svg"),
+    "s3_browser_icon.ico": appIconIcoPath,
   },
 };
 
@@ -78,6 +86,11 @@ runOrThrow(postject[0], [
   "--sentinel-fuse",
   SEA_FUSE,
 ]);
+
+const rcedit = rceditCommandArgs();
+if (rcedit) {
+  runOrThrow(rcedit[0], [outputExePath, "--set-icon", appIconIcoPath]);
+}
 
 const exeStat = await stat(outputExePath);
 console.log(`Built ${outputExePath} (${exeStat.size} bytes)`);

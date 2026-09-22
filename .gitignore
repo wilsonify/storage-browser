@@ -32,3 +32,6 @@ amplifyconfiguration*
 
 # s3-browser runtime queue persistence
 s3-browser/.data/
+
+# s3-browser SEA build staging
+s3-browser/.sea-build/

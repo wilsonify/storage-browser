@@ -118,6 +118,31 @@ async function handleEnqueueOperation(req, res) {
     return json(res, { error: "Missing bucket in operation payload" }, 400);
   }
 
+  function isNonEmptyStringArray(value) {
+    return Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string" && v.length > 0);
+  }
+
+  if ((type === "move" || type === "copy") && !isNonEmptyStringArray(payload.sources)) {
+    return json(res, { error: "Missing or invalid sources" }, 400);
+  }
+
+  if ((type === "move" || type === "copy") && (typeof payload.destination !== "string" || !payload.destination)) {
+    return json(res, { error: "Missing or invalid destination" }, 400);
+  }
+
+  if (type === "delete" && !isNonEmptyStringArray(payload.targets)) {
+    return json(res, { error: "Missing or invalid targets" }, 400);
+  }
+
+  if (type === "rename") {
+    if (typeof payload.source !== "string" || !payload.source) {
+      return json(res, { error: "Missing or invalid source" }, 400);
+    }
+    if (typeof payload.newName !== "string" || !payload.newName) {
+      return json(res, { error: "Missing or invalid newName" }, 400);
+    }
+  }
+
   try {
     const operation = await operationStore.enqueue(type, payload);
     operationWorker.wake();

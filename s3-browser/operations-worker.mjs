@@ -43,6 +43,7 @@ export class OperationsWorker {
 
     try {
       const onProgress = (progress) => this.store.markProgress(id, progress);
+      const shouldCancel = () => this.store.getById(id)?.cancelRequested === true;
       let result;
 
       if (op.type === "move") {
@@ -51,6 +52,7 @@ export class OperationsWorker {
           sources: op.payload.sources,
           destination: op.payload.destination,
           onProgress,
+          shouldCancel,
         });
       } else if (op.type === "copy") {
         result = await this.s3ops.copyTargets({
@@ -58,12 +60,14 @@ export class OperationsWorker {
           sources: op.payload.sources,
           destination: op.payload.destination,
           onProgress,
+          shouldCancel,
         });
       } else if (op.type === "delete") {
         result = await this.s3ops.deleteTargets({
           bucket: op.payload.bucket,
           targets: op.payload.targets,
           onProgress,
+          shouldCancel,
         });
       } else if (op.type === "rename") {
         result = await this.s3ops.renameTarget({
@@ -71,6 +75,7 @@ export class OperationsWorker {
           source: op.payload.source,
           newName: op.payload.newName,
           onProgress,
+          shouldCancel,
         });
       } else {
         throw new Error(`Unsupported operation type: ${op.type}`);
@@ -78,7 +83,11 @@ export class OperationsWorker {
 
       await this.store.markCompleted(id, result);
     } catch (err) {
-      await this.store.markFailed(id, err);
+      if (err?.name === "OperationCancelledError") {
+        await this.store.markCancelled(id);
+      } else {
+        await this.store.markFailed(id, err);
+      }
     }
   }
 }

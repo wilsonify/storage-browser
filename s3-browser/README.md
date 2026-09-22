@@ -8,6 +8,7 @@ A minimal local S3 file browser.
 cd s3-browser
 npm install   # first time only
 npm start
+npm test
 ```
 
 Then open **http://localhost:3737**
@@ -30,13 +31,17 @@ index.html  →  Node.js server (localhost:3737)  →  AWS SDK  →  S3
 - Sort by name/size/date
 - Filter/search within current view
 - Open/download files in a new tab
-- Move files and folders by dragging and dropping them onto a folder (server-side copy + delete)
+- Queue asynchronous move/copy/delete/rename operations with persisted state
+- Move files and folders safely via copy-then-delete
+- Drag/drop, right-click context menu, multi-select, and Explorer-like keyboard shortcuts
+- Back / Forward / Up / Refresh navigation
+- Operations panel with queued/running/completed/failed states and retry
 - Keyboard navigation (arrow keys, Enter, Backspace to go up)
 - Infinite scroll for large directories
 
 ## What it does NOT do
 
-- Upload, delete, rename, or modify anything (moving is copy + delete under the hood)
+- Upload new objects from local files
 - Expose AWS credentials to the browser
 - Require authentication (localhost only)
 

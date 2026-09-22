@@ -1,7 +1,7 @@
 import { copyFile, mkdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { runCommandStep } from "./run-command-with-timeout.mjs";
 
 const SEA_FUSE = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 const rootDir = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -14,17 +14,14 @@ const seaBlobPath = join(buildDir, "sea-prep.blob");
 const outputExePath = join(distDir, "s3-browser.exe");
 const appIconIcoPath = join(rootDir, "assets", "s3_browser_icon.ico");
 
-function runOrThrow(command, args, useShell = false) {
-  const result = spawnSync(command, args, {
-    cwd: rootDir,
-    stdio: "inherit",
-    shell: useShell,
-  });
+const TIMEOUTS = {
+  bundleMs: 2 * 60 * 1000,
+  seaBlobMs: 2 * 60 * 1000,
+  injectBlobMs: 2 * 60 * 1000,
+  setIconMs: 90 * 1000,
+};
 
-  if (result.status !== 0) {
-    throw new Error(`Command failed: ${command} ${args.join(" ")}`);
-  }
-}
+const strictIconStamp = process.env.S3_BROWSER_STRICT_ICON_STAMP === "1";
 
 function esbuildCommand() {
   if (process.platform === "win32") {
@@ -53,14 +50,20 @@ if (!Number.isFinite(major) || major < 20) {
 await mkdir(buildDir, { recursive: true });
 await mkdir(distDir, { recursive: true });
 
-runOrThrow(esbuildCommand(), [
+await runCommandStep({
+  stepLabel: "1/4 Bundle server",
+  command: esbuildCommand(),
+  args: [
   "server.mjs",
   "--bundle",
   "--platform=node",
   "--format=cjs",
   "--target=node24",
   `--outfile=${bundlePath}`,
-]);
+  ],
+  cwd: rootDir,
+  timeoutMs: TIMEOUTS.bundleMs,
+});
 
 const seaConfig = {
   main: bundlePath,
@@ -74,22 +77,47 @@ const seaConfig = {
 };
 
 await writeFile(seaConfigPath, JSON.stringify(seaConfig, null, 2), "utf-8");
-runOrThrow(process.execPath, ["--experimental-sea-config", seaConfigPath]);
+await runCommandStep({
+  stepLabel: "2/4 Build SEA blob",
+  command: process.execPath,
+  args: ["--experimental-sea-config", seaConfigPath],
+  cwd: rootDir,
+  timeoutMs: TIMEOUTS.seaBlobMs,
+});
 
 await copyFile(process.execPath, outputExePath);
 const postject = postjectCommandArgs();
-runOrThrow(postject[0], [
+await runCommandStep({
+  stepLabel: "3/4 Inject SEA blob",
+  command: postject[0],
+  args: [
   ...postject.slice(1),
   outputExePath,
   "NODE_SEA_BLOB",
   seaBlobPath,
   "--sentinel-fuse",
   SEA_FUSE,
-]);
+  ],
+  cwd: rootDir,
+  timeoutMs: TIMEOUTS.injectBlobMs,
+});
 
 const rcedit = rceditCommandArgs();
 if (rcedit) {
-  runOrThrow(rcedit[0], [outputExePath, "--set-icon", appIconIcoPath]);
+  try {
+    await runCommandStep({
+      stepLabel: "4/4 Stamp EXE icon",
+      command: rcedit[0],
+      args: [outputExePath, "--set-icon", appIconIcoPath],
+      cwd: rootDir,
+      timeoutMs: TIMEOUTS.setIconMs,
+    });
+  } catch (err) {
+    if (strictIconStamp) throw err;
+    console.warn("\n[4/4 Stamp EXE icon] Non-fatal warning: icon stamping failed or timed out.");
+    console.warn("Set S3_BROWSER_STRICT_ICON_STAMP=1 to make this step fail the build.");
+    console.warn(err.message);
+  }
 }
 
 const exeStat = await stat(outputExePath);

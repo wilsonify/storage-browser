@@ -173,6 +173,18 @@ async function handleRetryOperation(_req, res, id) {
   json(res, retried);
 }
 
+async function handleCancelOperation(_req, res, id) {
+  const operation = operationStore.getById(id);
+  if (!operation) return json(res, { error: "Operation not found" }, 404);
+
+  const result = await operationStore.cancel(id);
+  if (!result.changed) {
+    return json(res, { error: result.reason }, 400);
+  }
+
+  json(res, result.op);
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
@@ -225,6 +237,11 @@ const server = createServer(async (req, res) => {
   const retryMatch = path.match(/^\/api\/operations\/([^/]+)\/retry$/);
   if (retryMatch && req.method === "POST") {
     return handleRetryOperation(req, res, retryMatch[1]);
+  }
+
+  const cancelMatch = path.match(/^\/api\/operations\/([^/]+)\/cancel$/);
+  if (cancelMatch && req.method === "POST") {
+    return handleCancelOperation(req, res, cancelMatch[1]);
   }
 
   // API: legacy synchronous move now enqueues async move operation

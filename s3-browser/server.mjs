@@ -27,6 +27,14 @@ async function loadIndexHtml() {
   return readFile(join(appDir, "index.html"), "utf-8");
 }
 
+async function loadAssetBytes(name) {
+  if (isSea()) {
+    return Buffer.from(getRawAsset(name));
+  }
+
+  return readFile(join(appDir, "assets", name));
+}
+
 function openBrowser(url) {
   if (process.env.S3_BROWSER_NO_OPEN === "1") return;
 
@@ -250,6 +258,36 @@ async function handleCancelOperation(_req, res, id) {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
+
+  if (path === "/assets/s3_browser_icon.svg") {
+    try {
+      const bytes = await loadAssetBytes("s3_browser_icon.svg");
+      res.writeHead(200, {
+        "Content-Type": "image/svg+xml",
+        "Cache-Control": "public, max-age=86400",
+      });
+      res.end(bytes);
+    } catch {
+      res.writeHead(404);
+      res.end("Not found");
+    }
+    return;
+  }
+
+  if (path === "/assets/s3_browser_icon.ico") {
+    try {
+      const bytes = await loadAssetBytes("s3_browser_icon.ico");
+      res.writeHead(200, {
+        "Content-Type": "image/x-icon",
+        "Cache-Control": "public, max-age=86400",
+      });
+      res.end(bytes);
+    } catch {
+      res.writeHead(404);
+      res.end("Not found");
+    }
+    return;
+  }
 
   // Serve index.html
   if (path === "/" || path === "/index.html") {

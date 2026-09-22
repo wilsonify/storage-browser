@@ -8,6 +8,8 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 
+const MAX_EXPANDED_OBJECTS = 50000;
+
 function ensureFolderPrefix(value) {
   return value.endsWith("/") ? value : `${value}/`;
 }
@@ -31,6 +33,73 @@ function throwIfCancelled(shouldCancel) {
     err.name = "OperationCancelledError";
     throw err;
   }
+}
+
+function isFolderPath(path) {
+  return typeof path === "string" && path.endsWith("/");
+}
+
+function uniqueSources(sources) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of sources || []) {
+    if (typeof raw !== "string" || !raw) continue;
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+    out.push(raw);
+  }
+  return out;
+}
+
+function sourceContainsPath(source, path) {
+  if (!isFolderPath(source)) return source === path;
+  return path.startsWith(source);
+}
+
+function classifySourcesForDestination(sources, destinationPrefix) {
+  const normalized = uniqueSources(sources);
+  const skipped = {
+    destinationSelf: [],
+    recursive: [],
+    redundantNested: [],
+  };
+
+  // 1) Remove exact destination self entries (safe no-op on self-drop)
+  const withoutDestination = [];
+  for (const source of normalized) {
+    if (source === destinationPrefix) {
+      skipped.destinationSelf.push(source);
+      continue;
+    }
+    withoutDestination.push(source);
+  }
+
+  // 2) Remove sources that would recursively contain destination
+  const withoutRecursive = [];
+  for (const source of withoutDestination) {
+    if (isFolderPath(source) && destinationPrefix.startsWith(source)) {
+      skipped.recursive.push(source);
+      continue;
+    }
+    withoutRecursive.push(source);
+  }
+
+  // 3) Remove redundant nested selections (parent folder selection already covers descendant)
+  const effective = [];
+  for (const source of withoutRecursive) {
+    const covered = withoutRecursive.some((other) => {
+      if (other === source) return false;
+      return isFolderPath(other) && sourceContainsPath(other, source);
+    });
+
+    if (covered) {
+      skipped.redundantNested.push(source);
+      continue;
+    }
+    effective.push(source);
+  }
+
+  return { effectiveSources: effective, skipped };
 }
 
 export class AwsS3Ops {
@@ -134,13 +203,31 @@ export class AwsS3Ops {
 
   async copyTargets({ bucket, sources, destination, onProgress, shouldCancel }) {
     const destinationPrefix = ensureFolderPrefix(destination);
-    const copyPlan = [];
+    const { effectiveSources, skipped } = classifySourcesForDestination(sources, destinationPrefix);
 
-    for (const source of sources) {
+    if (effectiveSources.length === 0) {
+      onProgress?.({ total: 0, completed: 0, message: "No-op" });
+      return {
+        copied: 0,
+        copiedKeys: [],
+        skipped,
+        noop: true,
+      };
+    }
+
+    const copyPlan = [];
+    let expandedObjects = 0;
+
+    for (const source of effectiveSources) {
       throwIfCancelled(shouldCancel);
       if (source.endsWith("/")) {
         const folderName = baseName(source);
         const sourceKeys = await this.listAllKeysForPrefix(bucket, source);
+
+        expandedObjects += sourceKeys.length;
+        if (expandedObjects > MAX_EXPANDED_OBJECTS) {
+          throw new Error(`Operation exceeds safety limit of ${MAX_EXPANDED_OBJECTS} objects`);
+        }
 
         if (sourceKeys.length === 0) {
           copyPlan.push({ markerOnly: true, destinationKey: `${destinationPrefix}${folderName}/` });
@@ -174,18 +261,26 @@ export class AwsS3Ops {
     return {
       copied: copyPlan.length,
       copiedKeys: copyPlan.filter((step) => step.sourceKey).map((step) => step.destinationKey),
+      skipped,
     };
   }
 
   async moveTargets({ bucket, sources, destination, onProgress, shouldCancel }) {
     const destinationPrefix = ensureFolderPrefix(destination);
+    const { effectiveSources, skipped } = classifySourcesForDestination(sources, destinationPrefix);
 
-    for (const source of sources) {
+    if (effectiveSources.length === 0) {
+      onProgress?.({ total: 0, completed: 0, message: "No-op" });
+      return {
+        moved: 0,
+        copied: 0,
+        skipped,
+        noop: true,
+      };
+    }
+
+    for (const source of effectiveSources) {
       throwIfCancelled(shouldCancel);
-      if (source.endsWith("/") && destinationPrefix.startsWith(source)) {
-        throw new Error("Cannot move a folder into itself");
-      }
-
       if (destinationPrefix === parentPrefix(source)) {
         throw new Error("Source and destination are the same");
       }
@@ -193,12 +288,18 @@ export class AwsS3Ops {
 
     const expanded = [];
     const copyPlan = [];
+    let expandedObjects = 0;
 
-    for (const source of sources) {
+    for (const source of effectiveSources) {
       throwIfCancelled(shouldCancel);
       if (source.endsWith("/")) {
         const folderName = baseName(source);
         const sourceKeys = await this.listAllKeysForPrefix(bucket, source);
+
+        expandedObjects += sourceKeys.length;
+        if (expandedObjects > MAX_EXPANDED_OBJECTS) {
+          throw new Error(`Operation exceeds safety limit of ${MAX_EXPANDED_OBJECTS} objects`);
+        }
 
         if (sourceKeys.length === 0) {
           copyPlan.push({ markerOnly: true, destinationKey: `${destinationPrefix}${folderName}/` });
@@ -241,6 +342,7 @@ export class AwsS3Ops {
     return {
       moved: expanded.length,
       copied: copyPlan.length,
+      skipped,
     };
   }
 

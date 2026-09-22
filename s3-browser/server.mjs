@@ -1,9 +1,12 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { S3Client, ListBucketsCommand, ListObjectsV2Command, GetObjectCommand, HeadObjectCommand, CopyObjectCommand, DeleteObjectsCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client } from "@aws-sdk/client-s3";
 import { fromIni } from "@aws-sdk/credential-providers";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { AwsS3Ops } from "./s3-ops.mjs";
+import { OperationStore } from "./operations-store.mjs";
+import { OperationsWorker } from "./operations-worker.mjs";
 
 const PORT = 3737;
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -12,6 +15,9 @@ const s3 = new S3Client({
   region: "us-east-1",
   credentials: fromIni({ profile: "personal" }),
 });
+const s3ops = new AwsS3Ops(s3);
+const operationStore = new OperationStore(join(__dirname, ".data", "operations.json"));
+const operationWorker = new OperationsWorker({ store: operationStore, s3ops });
 
 function json(res, data, status = 200) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -29,12 +35,7 @@ async function readBody(req) {
 
 async function handleBuckets(_req, res) {
   try {
-    const cmd = new ListBucketsCommand({});
-    const resp = await s3.send(cmd);
-    const buckets = (resp.Buckets || []).map((b) => ({
-      name: b.Name,
-      created: b.CreationDate?.toISOString(),
-    }));
+    const buckets = await s3ops.listBuckets();
     json(res, buckets);
   } catch (err) {
     json(res, { error: err.message }, 500);
@@ -47,39 +48,14 @@ async function handleListObjects(req, res, bucket, url) {
   const delimiter = url.searchParams.get("delimiter") || "/";
 
   try {
-    const cmd = new ListObjectsV2Command({
-      Bucket: bucket,
-      Prefix: prefix,
-      Delimiter: delimiter,
-      ContinuationToken: continuationToken,
-      MaxKeys: 1000,
-    });
-    const resp = await s3.send(cmd);
-
-    const folders = (resp.CommonPrefixes || []).map((p) => ({
-      name: p.Prefix.replace(prefix, "").replace(/\/$/, ""),
-      type: "folder",
-      path: p.Prefix,
-    }));
-
-    const files = (resp.Contents || [])
-      .filter((o) => o.Key !== prefix)
-      .map((o) => ({
-        name: o.Key.split("/").pop(),
-        type: "file",
-        key: o.Key,
-        size: o.Size,
-        modified: o.LastModified?.toISOString(),
-      }));
-
-    json(res, {
-      folders,
-      files,
-      isTruncated: resp.IsTruncated,
-      nextContinuationToken: resp.NextContinuationToken,
-      prefix,
+    const data = await s3ops.listObjects({
       bucket,
+      prefix,
+      continuationToken,
+      delimiter,
+      maxKeys: 1000,
     });
+    json(res, data);
   } catch (err) {
     json(res, { error: err.message }, 500);
   }
@@ -90,7 +66,7 @@ async function handleDownload(_req, res, bucket, url) {
   if (!key) return json(res, { error: "Missing key" }, 400);
 
   try {
-    const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    const { head, body } = await s3ops.getDownloadStream(bucket, key);
     const ext = key.split(".").pop().toLowerCase();
     const contentTypes = {
       mp3: "audio/mpeg",
@@ -110,21 +86,48 @@ async function handleDownload(_req, res, bucket, url) {
     const contentType = head.ContentType || contentTypes[ext] || "application/octet-stream";
     const fileName = key.split("/").pop();
 
-    const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
-    const resp = await s3.send(cmd);
-
     res.writeHead(200, {
       "Content-Type": contentType,
       "Content-Length": head.ContentLength,
       "Content-Disposition": `inline; filename="${fileName}"`,
     });
-    resp.Body.pipe(res);
+    body.pipe(res);
   } catch (err) {
     json(res, { error: err.message }, 500);
   }
 }
 
-async function handleMove(req, res) {
+async function handleEnqueueOperation(req, res) {
+  let body;
+  try {
+    body = JSON.parse(await readBody(req));
+  } catch {
+    return json(res, { error: "Invalid JSON body" }, 400);
+  }
+
+  const { type, payload } = body || {};
+  if (!["move", "copy", "delete", "rename"].includes(type)) {
+    return json(res, { error: "Invalid operation type" }, 400);
+  }
+  if (!payload || typeof payload !== "object") {
+    return json(res, { error: "Missing operation payload" }, 400);
+  }
+
+  const bucket = payload.bucket;
+  if (!bucket || typeof bucket !== "string") {
+    return json(res, { error: "Missing bucket in operation payload" }, 400);
+  }
+
+  try {
+    const operation = await operationStore.enqueue(type, payload);
+    operationWorker.wake();
+    json(res, operation, 202);
+  } catch (err) {
+    json(res, { error: err.message }, 500);
+  }
+}
+
+async function handleLegacyMove(req, res) {
   let body;
   try {
     body = JSON.parse(await readBody(req));
@@ -136,84 +139,38 @@ async function handleMove(req, res) {
   if (!bucket || typeof source !== "string" || !source || typeof destination !== "string" || !destination) {
     return json(res, { error: "Missing bucket, source, or destination" }, 400);
   }
-  if (source === destination) {
-    return json(res, { error: "Source and destination are the same" }, 400);
-  }
-
-  const isFolder = source.endsWith("/");
-
-  // A folder cannot be moved into itself or one of its subfolders
-  if (isFolder && destination.startsWith(source)) {
-    return json(res, { error: "Cannot move a folder into itself" }, 400);
-  }
 
   try {
-    let sourceKeys;
-    let newKeys;
-
-    if (isFolder) {
-      // Gather every object under the folder prefix
-      sourceKeys = [];
-      let token;
-      do {
-        const cmd = new ListObjectsV2Command({
-          Bucket: bucket,
-          Prefix: source,
-          ContinuationToken: token,
-        });
-        const resp = await s3.send(cmd);
-        sourceKeys.push(...(resp.Contents || []).map((o) => o.Key));
-        token = resp.IsTruncated ? resp.NextContinuationToken : undefined;
-      } while (token);
-
-      const folderName = source.split("/").filter(Boolean).pop();
-
-      if (sourceKeys.length === 0) {
-        // Empty folder (no marker object): materialize it at the destination
-        await s3.send(new PutObjectCommand({
-          Bucket: bucket,
-          Key: destination + folderName + "/",
-          Body: "",
-        }));
-        return json(res, { moved: 0, created: true });
-      }
-
-      // Keep the folder name: album/Heavy Weather/<relative path>
-      const newPrefix = destination + folderName + "/";
-      newKeys = sourceKeys.map((key) => newPrefix + key.slice(source.length));
-    } else {
-      const fileName = source.split("/").pop();
-      const targetKey = destination + fileName;
-      if (targetKey === source) {
-        return json(res, { error: "Source and destination are the same" }, 400);
-      }
-      sourceKeys = [source];
-      newKeys = [targetKey];
-    }
-
-    // Copy everything first, then delete originals (safe on partial failure)
-    for (let i = 0; i < sourceKeys.length; i++) {
-      await s3.send(new CopyObjectCommand({
-        Bucket: bucket,
-        CopySource: `${bucket}/${encodeURIComponent(sourceKeys[i])}`,
-        Key: newKeys[i],
-      }));
-    }
-
-    for (let i = 0; i < sourceKeys.length; i += 1000) {
-      await s3.send(new DeleteObjectsCommand({
-        Bucket: bucket,
-        Delete: {
-          Objects: sourceKeys.slice(i, i + 1000).map((key) => ({ Key: key })),
-          Quiet: true,
-        },
-      }));
-    }
-
-    json(res, { moved: sourceKeys.length });
+    const operation = await operationStore.enqueue("move", {
+      bucket,
+      sources: [source],
+      destination,
+    });
+    operationWorker.wake();
+    json(res, { operationId: operation.id, status: operation.status }, 202);
   } catch (err) {
     json(res, { error: err.message }, 500);
   }
+}
+
+async function handleListOperations(_req, res) {
+  json(res, { operations: operationStore.list() });
+}
+
+async function handleGetOperation(_req, res, id) {
+  const operation = operationStore.getById(id);
+  if (!operation) return json(res, { error: "Operation not found" }, 404);
+  json(res, operation);
+}
+
+async function handleRetryOperation(_req, res, id) {
+  const operation = operationStore.getById(id);
+  if (!operation) return json(res, { error: "Operation not found" }, 404);
+  if (operation.status !== "failed") return json(res, { error: "Only failed operations can be retried" }, 400);
+
+  const retried = await operationStore.retry(id);
+  operationWorker.wake();
+  json(res, retried);
 }
 
 const server = createServer(async (req, res) => {
@@ -251,14 +208,36 @@ const server = createServer(async (req, res) => {
     return handleDownload(req, res, bucket, url);
   }
 
-  // API: move object or folder (copy + delete)
+  // API: operation queue
+  if (path === "/api/operations" && req.method === "GET") {
+    return handleListOperations(req, res);
+  }
+
+  if (path === "/api/operations" && req.method === "POST") {
+    return handleEnqueueOperation(req, res);
+  }
+
+  const operationMatch = path.match(/^\/api\/operations\/([^/]+)$/);
+  if (operationMatch && req.method === "GET") {
+    return handleGetOperation(req, res, operationMatch[1]);
+  }
+
+  const retryMatch = path.match(/^\/api\/operations\/([^/]+)\/retry$/);
+  if (retryMatch && req.method === "POST") {
+    return handleRetryOperation(req, res, retryMatch[1]);
+  }
+
+  // API: legacy synchronous move now enqueues async move operation
   if (path === "/api/move" && req.method === "POST") {
-    return handleMove(req, res);
+    return handleLegacyMove(req, res);
   }
 
   res.writeHead(404);
   res.end("Not found");
 });
+
+await operationStore.init();
+operationWorker.start();
 
 server.listen(PORT, () => {
   console.log(`S3 Browser running at http://localhost:${PORT}`);

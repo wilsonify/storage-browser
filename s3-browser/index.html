@@ -5,269 +5,417 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>S3 Browser</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after { box-sizing: border-box; }
 
     :root {
-      --bg: #1a1b1e;
-      --surface: #25262b;
-      --border: #373a40;
-      --text: #c1c2c5;
-      --text-dim: #909296;
-      --accent: #339af0;
-      --accent-hover: #228be6;
-      --danger: #fa5252;
-      --sidebar-w: 220px;
+      --bg: #f6f8fb;
+      --surface: #ffffff;
+      --surface-alt: #f2f5fa;
+      --border: #d4dbe6;
+      --text: #222b35;
+      --text-dim: #5f6b7a;
+      --accent: #1376d5;
+      --accent-soft: #dceeff;
+      --danger: #b42318;
+      --sidebar-w: 250px;
       --row-h: 30px;
+      --font: "Segoe UI", "Tahoma", "Verdana", sans-serif;
     }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      margin: 0;
+      font-family: var(--font);
       font-size: 13px;
-      background: var(--bg);
       color: var(--text);
+      background:
+        radial-gradient(circle at top right, #eef6ff 0%, transparent 40%),
+        linear-gradient(180deg, #f9fbff 0%, var(--bg) 40%);
       height: 100vh;
-      display: flex;
+      display: grid;
+      grid-template-columns: var(--sidebar-w) 1fr;
       overflow: hidden;
     }
 
-    /* Sidebar */
     #sidebar {
-      width: var(--sidebar-w);
-      min-width: var(--sidebar-w);
       background: var(--surface);
       border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
+      min-width: var(--sidebar-w);
       overflow: hidden;
     }
 
     #sidebar-header {
       padding: 10px 12px;
-      font-weight: 600;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
       color: var(--text-dim);
+      text-transform: uppercase;
       border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%);
     }
 
     #bucket-list {
-      flex: 1;
       overflow-y: auto;
+      flex: 1;
       padding: 4px 0;
     }
 
     .bucket-item {
-      padding: 5px 12px;
+      padding: 6px 12px;
       cursor: pointer;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      font-size: 12px;
-      border-left: 2px solid transparent;
+      border-left: 3px solid transparent;
     }
 
-    .bucket-item:hover { background: var(--bg); }
+    .bucket-item:hover { background: var(--surface-alt); }
+
     .bucket-item.active {
-      background: var(--bg);
       border-left-color: var(--accent);
-      color: var(--accent);
+      background: var(--accent-soft);
+      font-weight: 600;
     }
 
-    /* Main area */
     #main {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto 180px;
+      min-width: 0;
       overflow: hidden;
     }
 
-    /* Toolbar */
     #toolbar {
-      padding: 8px 12px;
-      border-bottom: 1px solid var(--border);
       display: flex;
+      gap: 6px;
       align-items: center;
-      gap: 10px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #ffffff 0%, #f5f8fd 100%);
     }
 
-    #breadcrumbs {
-      flex: 1;
+    .btn {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      padding: 4px 8px;
+      border-radius: 5px;
+      cursor: pointer;
+      min-width: 32px;
+      height: 28px;
+      font-weight: 600;
+    }
+
+    .btn:hover:not(:disabled) { background: var(--surface-alt); }
+    .btn:disabled { opacity: 0.45; cursor: default; }
+
+    #pathbar {
       display: flex;
       align-items: center;
       gap: 2px;
-      font-size: 12px;
       min-width: 0;
-      overflow: hidden;
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
     }
 
     .crumb {
       cursor: pointer;
       color: var(--accent);
+      padding: 2px 5px;
+      border-radius: 4px;
       white-space: nowrap;
-      padding: 2px 4px;
-      border-radius: 3px;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    .crumb:hover { background: rgba(51, 154, 240, 0.1); }
-    .crumb:last-child { color: var(--text); cursor: default; }
+    .crumb:hover { background: var(--accent-soft); }
+    .crumb.current { color: var(--text); cursor: default; }
     .crumb-sep { color: var(--text-dim); }
 
     #search {
-      background: var(--bg);
+      margin-left: auto;
+      width: 240px;
       border: 1px solid var(--border);
-      color: var(--text);
-      padding: 4px 8px;
-      border-radius: 4px;
+      background: #fff;
+      border-radius: 5px;
+      padding: 5px 8px;
       font-size: 12px;
-      width: 180px;
     }
 
-    #search:focus { outline: none; border-color: var(--accent); }
+    #search:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 
-    #status {
-      font-size: 11px;
-      color: var(--text-dim);
-      white-space: nowrap;
-    }
-
-    /* Table */
     #table-wrap {
-      flex: 1;
       overflow: auto;
+      background: var(--surface);
     }
 
     table {
       width: 100%;
       border-collapse: collapse;
+      table-layout: fixed;
       font-size: 12px;
     }
 
     thead {
       position: sticky;
       top: 0;
-      z-index: 1;
+      z-index: 2;
+      background: #f4f7fc;
     }
 
     th {
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 6px 10px;
       text-align: left;
-      font-weight: 600;
-      color: var(--text-dim);
+      padding: 7px 10px;
+      color: #435264;
+      border-bottom: 1px solid var(--border);
+      font-weight: 700;
       cursor: pointer;
       user-select: none;
-      white-space: nowrap;
     }
 
     th:hover { color: var(--text); }
-    th .sort-arrow { margin-left: 4px; font-size: 10px; }
 
     td {
       padding: 5px 10px;
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid #edf1f7;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 500px;
+      height: var(--row-h);
     }
 
-    tr { height: var(--row-h); }
-    tr.folder td:first-child { font-weight: 500; }
+    .col-name { width: 58%; }
+    .col-size { width: 16%; text-align: right; }
+    .col-modified { width: 26%; text-align: right; color: var(--text-dim); }
 
-    tbody tr { cursor: pointer; }
-    tbody tr:hover { background: rgba(51, 154, 240, 0.06); }
-    tbody tr:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+    tbody tr { cursor: default; }
+    tbody tr:hover { background: #f2f8ff; }
 
-    tbody tr.dragging { opacity: 0.4; }
+    tbody tr.selected {
+      background: #cce6ff;
+      outline: 1px solid #9dcbf5;
+      outline-offset: -1px;
+    }
+
+    tbody tr.focused {
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+
     tbody tr.drop-target {
       outline: 2px dashed var(--accent);
       outline-offset: -2px;
-      background: rgba(51, 154, 240, 0.08);
+      background: #e7f3ff;
     }
 
-    .icon { margin-right: 6px; font-size: 14px; vertical-align: middle; }
-    .col-size, .col-modified { text-align: right; }
-    .col-name { width: 100%; }
+    .name-cell { display: flex; align-items: center; gap: 8px; }
+    .icon { font-size: 14px; }
 
-    .dim { color: var(--text-dim); }
-
-    /* Loading / Error */
-    #loading, #error, #empty {
+    #empty, #loading, #error {
       display: none;
-      padding: 40px 20px;
       text-align: center;
+      padding: 28px;
       color: var(--text-dim);
     }
 
     #error { color: var(--danger); }
 
-    /* Scrollbar */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    #statusbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 5px 10px;
+      border-top: 1px solid var(--border);
+      background: var(--surface-alt);
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+
+    #ops {
+      border-top: 1px solid var(--border);
+      background: #fff;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 0;
+    }
+
+    #ops-header {
+      padding: 8px 10px;
+      font-weight: 700;
+      color: #354252;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafe 100%);
+    }
+
+    #ops-list {
+      overflow: auto;
+      font-size: 12px;
+    }
+
+    .op-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 10px;
+      padding: 8px 10px;
+      border-bottom: 1px solid #eef2f8;
+      align-items: center;
+    }
+
+    .op-meta {
+      color: var(--text-dim);
+      font-size: 11px;
+      margin-top: 2px;
+    }
+
+    .op-status {
+      font-weight: 600;
+      min-width: 95px;
+      text-align: right;
+    }
+
+    .op-status.queued { color: #596c84; }
+    .op-status.running { color: #0b63b7; }
+    .op-status.completed { color: #067647; }
+    .op-status.failed { color: #b42318; }
+
+    .retry-btn {
+      border: 1px solid #dbb2b2;
+      background: #fff5f5;
+      color: #952a2a;
+      padding: 3px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: none;
+    }
+
+    .op-row.failed .retry-btn { display: inline-block; }
+
+    #context-menu {
+      position: fixed;
+      z-index: 10;
+      min-width: 160px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 8px 20px rgba(35, 53, 79, 0.2);
+      display: none;
+      overflow: hidden;
+    }
+
+    .menu-item {
+      padding: 7px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .menu-item:hover { background: var(--accent-soft); }
+    .menu-item.disabled { color: #8e99a7; cursor: default; }
+    .menu-divider { border-top: 1px solid #edf1f7; margin: 2px 0; }
+
+    @media (max-width: 1100px) {
+      :root { --sidebar-w: 200px; }
+      #main { grid-template-rows: auto auto 1fr auto 150px; }
+      #search { width: 170px; }
+    }
   </style>
 </head>
 <body>
-  <div id="sidebar">
+  <aside id="sidebar">
     <div id="sidebar-header">Buckets</div>
     <div id="bucket-list"></div>
-  </div>
-  <div id="main">
+  </aside>
+
+  <section id="main">
     <div id="toolbar">
-      <div id="breadcrumbs"></div>
-      <input id="search" type="text" placeholder="Filter..." autofocus>
-      <div id="status"></div>
+      <button class="btn" id="nav-back" title="Back">&#8592;</button>
+      <button class="btn" id="nav-forward" title="Forward">&#8594;</button>
+      <button class="btn" id="nav-up" title="Up">&#8593;</button>
+      <button class="btn" id="nav-refresh" title="Refresh">&#8635;</button>
     </div>
+
+    <div id="pathbar">
+      <div id="breadcrumbs"></div>
+      <input id="search" type="text" placeholder="Filter current folder">
+    </div>
+
     <div id="table-wrap">
       <table>
         <thead>
           <tr>
-            <th class="col-name" data-sort="name">Name<span class="sort-arrow"></span></th>
-            <th class="col-size" data-sort="size">Size<span class="sort-arrow"></span></th>
-            <th class="col-modified" data-sort="modified">Modified<span class="sort-arrow"></span></th>
+            <th class="col-name" data-sort="name">Name <span class="sort-arrow"></span></th>
+            <th class="col-size" data-sort="size">Size <span class="sort-arrow"></span></th>
+            <th class="col-modified" data-sort="modified">Modified <span class="sort-arrow"></span></th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
       </table>
       <div id="loading">Loading...</div>
       <div id="error"></div>
-      <div id="empty">Empty</div>
+      <div id="empty">This folder is empty.</div>
     </div>
-  </div>
+
+    <div id="statusbar">
+      <div id="status-left"></div>
+      <div id="status-right"></div>
+    </div>
+
+    <section id="ops">
+      <div id="ops-header">Operations</div>
+      <div id="ops-list"></div>
+    </section>
+  </section>
+
+  <div id="context-menu"></div>
 
   <script>
     const API = "";
     const $ = (s) => document.querySelector(s);
     const $$ = (s) => document.querySelectorAll(s);
 
-    let currentBucket = null;
-    let currentPrefix = "";
-    let items = []; // folders + files
-    let sortKey = "name";
-    let sortAsc = true;
-    let continuationToken = null;
-    let allLoaded = false;
-    let dragItem = null; // { type, name, path } of the item being dragged
+    const state = {
+      currentBucket: null,
+      currentPrefix: "",
+      items: [],
+      visible: [],
+      continuationToken: null,
+      allLoaded: false,
+      sortKey: "name",
+      sortAsc: true,
+      history: [],
+      historyIndex: -1,
+      selected: new Set(),
+      focusedPath: null,
+      anchorPath: null,
+      clipboard: null,
+      dragSources: [],
+      operations: [],
+      loading: false,
+      opsTimer: null,
+    };
 
-    // --- Fetch helpers ---
-
-    async function api(path) {
-      const res = await fetch(API + path);
+    async function api(path, options = undefined) {
+      const res = await fetch(API + path, options);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
       return data;
     }
 
-    // --- Format helpers ---
+    function escHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;");
+    }
 
     function humanSize(bytes) {
       if (bytes == null) return "";
       if (bytes === 0) return "0 B";
       const units = ["B", "KB", "MB", "GB", "TB"];
       const i = Math.floor(Math.log(bytes) / Math.log(1024));
-      return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + " " + units[i];
+      return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
     }
 
     function shortDate(iso) {
@@ -277,371 +425,746 @@
       return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     }
 
-    function escHtml(s) {
-      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    function statusText(op) {
+      const p = op.progress || { total: 0, completed: 0, message: "" };
+      const pieces = [op.status];
+      if (op.status === "running" || op.status === "completed") {
+        if (p.total > 0) {
+          pieces.push(`${p.completed}/${p.total}`);
+        }
+      }
+      if (op.status === "failed" && op.error) pieces.push(op.error);
+      return pieces.join(" - ");
     }
 
-    // --- Bucket list ---
+    function selectedArray() {
+      return [...state.selected];
+    }
+
+    function pathForItem(item) {
+      return item.type === "folder" ? item.path : item.key;
+    }
+
+    function findItemByPath(path) {
+      return state.visible.find((item) => pathForItem(item) === path) || null;
+    }
+
+    function ensureFolderPrefix(prefix) {
+      return prefix.endsWith("/") ? prefix : `${prefix}/`;
+    }
+
+    function parentPrefix(prefix) {
+      const trimmed = prefix.replace(/\/$/, "");
+      const idx = trimmed.lastIndexOf("/");
+      return idx === -1 ? "" : `${trimmed.slice(0, idx + 1)}`;
+    }
+
+    function itemLabel(item) {
+      return item.type === "folder" ? `${item.name}/` : item.name;
+    }
+
+    function setLoading(show) {
+      state.loading = show;
+      $("#loading").style.display = show ? "block" : "none";
+    }
+
+    function setError(msg) {
+      const el = $("#error");
+      el.style.display = msg ? "block" : "none";
+      el.textContent = msg || "";
+    }
+
+    function setEmpty(show) {
+      $("#empty").style.display = show ? "block" : "none";
+    }
+
+    function pushHistory(prefix) {
+      const current = state.history[state.historyIndex];
+      if (current && current.bucket === state.currentBucket && current.prefix === prefix) return;
+      state.history = state.history.slice(0, state.historyIndex + 1);
+      state.history.push({ bucket: state.currentBucket, prefix });
+      state.historyIndex = state.history.length - 1;
+      renderNavState();
+    }
+
+    function renderNavState() {
+      $("#nav-back").disabled = state.historyIndex <= 0;
+      $("#nav-forward").disabled = state.historyIndex >= state.history.length - 1 || state.historyIndex < 0;
+      $("#nav-up").disabled = !state.currentPrefix;
+    }
 
     async function loadBuckets() {
       const list = $("#bucket-list");
-      list.innerHTML = '<div class="dim" style="padding:12px">Loading...</div>';
+      list.innerHTML = '<div style="padding:10px;color:#5f6b7a">Loading...</div>';
+
       try {
         const buckets = await api("/api/buckets");
         buckets.sort((a, b) => a.name.localeCompare(b.name));
-        list.innerHTML = buckets.map((b) =>
-          `<div class="bucket-item" data-bucket="${escHtml(b.name)}" tabindex="0">${escHtml(b.name)}</div>`
-        ).join("");
+        list.innerHTML = buckets
+          .map((b) => `<div class="bucket-item" data-bucket="${escHtml(b.name)}">${escHtml(b.name)}</div>`)
+          .join("");
+
         list.querySelectorAll(".bucket-item").forEach((el) => {
           el.addEventListener("click", () => selectBucket(el.dataset.bucket));
-          el.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") selectBucket(el.dataset.bucket);
-          });
         });
       } catch (err) {
-        list.innerHTML = `<div id="error" style="display:block">${escHtml(err.message)}</div>`;
+        list.innerHTML = `<div style="padding:10px;color:#b42318">${escHtml(err.message)}</div>`;
       }
     }
 
     async function selectBucket(name) {
-      currentBucket = name;
-      currentPrefix = "";
-      continuationToken = null;
-      allLoaded = false;
+      state.currentBucket = name;
+      state.currentPrefix = "";
+      state.items = [];
+      state.continuationToken = null;
+      state.allLoaded = false;
+      state.selected.clear();
+      state.focusedPath = null;
+      state.anchorPath = null;
 
-      $$(".bucket-item").forEach((el) => el.classList.toggle("active", el.dataset.bucket === name));
-      await loadObjects();
+      $$(".bucket-item").forEach((el) => {
+        el.classList.toggle("active", el.dataset.bucket === name);
+      });
+
+      pushHistory("");
+      await loadObjects(false);
     }
-
-    // --- Object list ---
 
     async function loadObjects(append = false) {
-      if (!currentBucket) return;
+      if (!state.currentBucket || state.loading) return;
 
-      showLoading(true);
-      showError(null);
-      showEmpty(false);
-
-      const tbody = $("#tbody");
-      if (!append) tbody.innerHTML = "";
+      setLoading(true);
+      setError(null);
+      if (!append) {
+        $("#tbody").innerHTML = "";
+        state.items = [];
+        state.continuationToken = null;
+      }
 
       try {
-        let url = `/api/buckets/${encodeURIComponent(currentBucket)}/objects?prefix=${encodeURIComponent(currentPrefix)}`;
-        if (continuationToken) url += `&continuationToken=${encodeURIComponent(continuationToken)}`;
+        let url = `/api/buckets/${encodeURIComponent(state.currentBucket)}/objects?prefix=${encodeURIComponent(state.currentPrefix)}`;
+        if (append && state.continuationToken) {
+          url += `&continuationToken=${encodeURIComponent(state.continuationToken)}`;
+        }
 
         const data = await api(url);
+        const nextItems = data.folders.concat(data.files);
+        state.items = append ? state.items.concat(nextItems) : nextItems;
+        state.continuationToken = data.nextContinuationToken || null;
+        state.allLoaded = !data.isTruncated;
 
-        if (append) {
-          items = items.concat(data.folders, data.files);
-        } else {
-          items = data.folders.concat(data.files);
-        }
-
-        continuationToken = data.nextContinuationToken || null;
-        allLoaded = !data.isTruncated;
-
-        renderTable();
         renderBreadcrumbs();
-        updateStatus();
+        renderTable();
       } catch (err) {
-        showError(err.message);
+        setError(err.message);
       } finally {
-        showLoading(false);
+        setLoading(false);
       }
     }
 
-    function renderTable() {
-      const filter = ($("#search").value || "").toLowerCase();
-      const sorted = getSortedItems().filter((item) => !filter || item.name.toLowerCase().includes(filter));
-
-      const tbody = $("#tbody");
-      tbody.innerHTML = sorted.map((item, i) => {
-        const isFolder = item.type === "folder";
-        const icon = isFolder ? "\u{1F4C1}" : getFileIcon(item.name);
-        const cls = isFolder ? " class=\"folder\"" : "";
-        const date = isFolder ? "" : shortDate(item.modified);
-        const size = isFolder ? "" : humanSize(item.size);
-        const href = isFolder ? `javascript:void(0)` : `javascript:void(0)`;
-
-        return `<tr${cls} data-idx="${i}" data-type="${item.type}" tabindex="0" draggable="true">
-          <td class="col-name"><span class="icon">${icon}</span>${escHtml(item.name)}</td>
-          <td class="col-size">${size}</td>
-          <td class="col-modified dim">${date}</td>
-        </tr>`;
-      }).join("");
-
-      if (items.length === 0 && !continuationToken) {
-        showEmpty(true);
-      }
-
-      tbody.querySelectorAll("tr").forEach((tr) => {
-        const idx = parseInt(tr.dataset.idx);
-        const item = getSortedItems().filter((item) => {
-          const filter = ($("#search").value || "").toLowerCase();
-          return !filter || item.name.toLowerCase().includes(filter);
-        })[idx];
-
-        if (!item) return;
-
-        tr.addEventListener("click", () => handleItem(item));
-        tr.addEventListener("dblclick", () => handleItem(item));
-        tr.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") handleItem(item);
-        });
-
-        // Drag-and-drop move
-        tr.addEventListener("dragstart", (e) => {
-          dragItem = { type: item.type, name: item.name, path: item.path || item.key };
-          e.dataTransfer.setData("text/plain", JSON.stringify(dragItem));
-          e.dataTransfer.effectAllowed = "move";
-          tr.classList.add("dragging");
-        });
-        tr.addEventListener("dragend", () => {
-          tr.classList.remove("dragging");
-          $$(".drop-target").forEach((el) => el.classList.remove("drop-target"));
-          dragItem = null;
-        });
-
-        // Folders are drop targets
-        if (item.type === "folder") {
-          tr.addEventListener("dragover", (e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = "move";
-            if (dragItem && dragItem.path !== item.path) tr.classList.add("drop-target");
-          });
-          tr.addEventListener("dragleave", (e) => {
-            if (!tr.contains(e.relatedTarget)) tr.classList.remove("drop-target");
-          });
-          tr.addEventListener("drop", (e) => {
-            e.preventDefault();
-            tr.classList.remove("drop-target");
-            if (dragItem) moveItem(dragItem, item);
-          });
-        }
-      });
-    }
-
-    function handleItem(item) {
-      if (item.type === "folder") {
-        navigateTo(item.path || item.name);
-      } else {
-        downloadFile(item.key);
-      }
-    }
-
-    function navigateTo(prefix) {
-      currentPrefix = prefix;
-      continuationToken = null;
-      allLoaded = false;
-      items = [];
-      loadObjects();
-    }
-
-    function downloadFile(key) {
-      const url = `/api/download?bucket=${encodeURIComponent(currentBucket)}&key=${encodeURIComponent(key)}`;
-      window.open(url, "_blank");
-    }
-
-    async function moveItem(item, target) {
-      if (!item || !target || item.path === target.path) return;
-
-      const source = item.path;        // folder prefix or file key
-      const destination = target.path; // folder prefix
-
-      // A folder cannot be moved into itself or one of its subfolders
-      if (source.endsWith("/") && destination.startsWith(source)) {
-        showError(`Cannot move "${item.name}" into itself`);
+    function renderBreadcrumbs() {
+      const bc = $("#breadcrumbs");
+      if (!state.currentBucket) {
+        bc.innerHTML = "";
         return;
       }
 
-      if (!confirm(`Move "${item.name}" into "${target.name}"?`)) return;
+      const parts = state.currentPrefix ? state.currentPrefix.replace(/\/$/, "").split("/") : [];
+      let html = `<span class="crumb" data-path="">${escHtml(state.currentBucket)}</span>`;
+      let acc = "";
 
-      const status = $("#status");
-      status.textContent = `Moving "${item.name}"...`;
-      try {
-        const res = await fetch(API + "/api/move", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ bucket: currentBucket, source, destination }),
+      parts.forEach((part, idx) => {
+        if (!part) return;
+        acc += `${part}/`;
+        html += `<span class="crumb-sep">/</span>`;
+        const cls = idx === parts.length - 1 ? "crumb current" : "crumb";
+        html += `<span class="${cls}" data-path="${escHtml(acc)}">${escHtml(part)}</span>`;
+      });
+
+      bc.innerHTML = html;
+      bc.querySelectorAll(".crumb").forEach((el) => {
+        el.addEventListener("click", () => {
+          const path = el.dataset.path;
+          if (path === state.currentPrefix) return;
+          navigateTo(path, true);
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || res.statusText);
-        showError(null);
-        await loadObjects();
-      } catch (err) {
-        showError(`Move failed: ${err.message}`);
-        updateStatus();
+      });
+    }
+
+    function getSortedVisibleItems() {
+      const filter = ($("#search").value || "").trim().toLowerCase();
+      const sorted = [...state.items].sort((a, b) => {
+        if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
+
+        let va = a[state.sortKey];
+        let vb = b[state.sortKey];
+
+        if (state.sortKey === "name") {
+          va = (va || "").toLowerCase();
+          vb = (vb || "").toLowerCase();
+          return state.sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
+
+        if (state.sortKey === "size") {
+          va = va || 0;
+          vb = vb || 0;
+          return state.sortAsc ? va - vb : vb - va;
+        }
+
+        va = va || "";
+        vb = vb || "";
+        return state.sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+      });
+
+      state.visible = sorted.filter((item) => !filter || item.name.toLowerCase().includes(filter));
+      return state.visible;
+    }
+
+    function renderTable() {
+      const visible = getSortedVisibleItems();
+      const tbody = $("#tbody");
+
+      tbody.innerHTML = visible
+        .map((item) => {
+          const path = pathForItem(item);
+          const selected = state.selected.has(path) ? " selected" : "";
+          const focused = state.focusedPath === path ? " focused" : "";
+          const icon = item.type === "folder" ? "&#128193;" : fileIcon(item.name);
+          return `<tr class="${selected}${focused}" data-path="${escHtml(path)}" data-type="${item.type}" draggable="true">
+            <td class="col-name"><div class="name-cell"><span class="icon">${icon}</span><span>${escHtml(item.name)}</span></div></td>
+            <td class="col-size">${item.type === "folder" ? "" : humanSize(item.size)}</td>
+            <td class="col-modified">${item.type === "folder" ? "" : shortDate(item.modified)}</td>
+          </tr>`;
+        })
+        .join("");
+
+      setEmpty(visible.length === 0 && !state.loading);
+      bindRows();
+      updateStatusBar();
+    }
+
+    function bindRows() {
+      $("#tbody").querySelectorAll("tr").forEach((tr) => {
+        const path = tr.dataset.path;
+        const item = findItemByPath(path);
+        if (!item) return;
+
+        tr.addEventListener("click", (e) => selectItemFromClick(item, e));
+        tr.addEventListener("dblclick", () => activateItem(item));
+        tr.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          if (!state.selected.has(path)) {
+            state.selected.clear();
+            state.selected.add(path);
+            state.focusedPath = path;
+            state.anchorPath = path;
+            renderTable();
+          }
+          openContextMenu(e.clientX, e.clientY, item);
+        });
+
+        tr.addEventListener("dragstart", (e) => {
+          const selected = selectedArray();
+          const sourcePaths = selected.length && state.selected.has(path) ? selected : [path];
+          state.dragSources = sourcePaths;
+          e.dataTransfer.setData("text/plain", JSON.stringify(sourcePaths));
+          e.dataTransfer.effectAllowed = "move";
+        });
+
+        tr.addEventListener("dragend", () => {
+          state.dragSources = [];
+          $$(".drop-target").forEach((el) => el.classList.remove("drop-target"));
+        });
+
+        if (item.type === "folder") {
+          tr.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            tr.classList.add("drop-target");
+            e.dataTransfer.dropEffect = "move";
+          });
+
+          tr.addEventListener("dragleave", () => {
+            tr.classList.remove("drop-target");
+          });
+
+          tr.addEventListener("drop", async (e) => {
+            e.preventDefault();
+            tr.classList.remove("drop-target");
+            if (!state.dragSources.length) return;
+
+            const destination = ensureFolderPrefix(item.path);
+            const invalid = state.dragSources.find((source) => source.endsWith("/") && destination.startsWith(source));
+            if (invalid) {
+              setError("Cannot move a folder into itself.");
+              return;
+            }
+
+            await enqueueOperation("move", {
+              bucket: state.currentBucket,
+              sources: state.dragSources,
+              destination,
+            });
+            await refreshCurrentFolder();
+          });
+        }
+      });
+    }
+
+    function selectItemFromClick(item, e) {
+      const path = pathForItem(item);
+      const visiblePaths = state.visible.map(pathForItem);
+
+      if (e.shiftKey && state.anchorPath && visiblePaths.includes(state.anchorPath)) {
+        const a = visiblePaths.indexOf(state.anchorPath);
+        const b = visiblePaths.indexOf(path);
+        const [start, end] = a < b ? [a, b] : [b, a];
+
+        state.selected.clear();
+        for (let i = start; i <= end; i += 1) {
+          state.selected.add(visiblePaths[i]);
+        }
+      } else if (e.ctrlKey || e.metaKey) {
+        if (state.selected.has(path)) {
+          state.selected.delete(path);
+        } else {
+          state.selected.add(path);
+        }
+        state.anchorPath = path;
+      } else {
+        state.selected.clear();
+        state.selected.add(path);
+        state.anchorPath = path;
+      }
+
+      state.focusedPath = path;
+      renderTable();
+    }
+
+    function activateItem(item) {
+      if (item.type === "folder") {
+        navigateTo(item.path, true);
+      } else {
+        const url = `/api/download?bucket=${encodeURIComponent(state.currentBucket)}&key=${encodeURIComponent(item.key)}`;
+        window.open(url, "_blank");
       }
     }
 
-    // --- Sorting ---
-
-    function getSortedItems() {
-      return [...items].sort((a, b) => {
-        // Folders always first
-        if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
-
-        let va = a[sortKey];
-        let vb = b[sortKey];
-
-        if (sortKey === "name") {
-          va = (va || "").toLowerCase();
-          vb = (vb || "").toLowerCase();
-          return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
-        }
-        if (sortKey === "size") {
-          va = va || 0;
-          vb = vb || 0;
-          return sortAsc ? va - vb : vb - va;
-        }
-        if (sortKey === "modified") {
-          va = va || "";
-          vb = vb || "";
-          return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
-        }
-        return 0;
-      });
+    async function navigateTo(prefix, push = true) {
+      state.currentPrefix = prefix;
+      state.selected.clear();
+      state.focusedPath = null;
+      state.anchorPath = null;
+      state.continuationToken = null;
+      state.allLoaded = false;
+      if (push) pushHistory(prefix);
+      await loadObjects(false);
     }
 
-    $$("th[data-sort]").forEach((th) => {
-      th.addEventListener("click", () => {
-        const key = th.dataset.sort;
-        if (sortKey === key) {
-          sortAsc = !sortAsc;
-        } else {
-          sortKey = key;
-          sortAsc = true;
-        }
-        updateSortArrows();
-        renderTable();
-      });
-    });
+    async function navigateBack() {
+      if (state.historyIndex <= 0) return;
+      state.historyIndex -= 1;
+      const point = state.history[state.historyIndex];
+      if (!point) return;
+      if (point.bucket !== state.currentBucket) {
+        await selectBucket(point.bucket);
+      }
+      state.currentPrefix = point.prefix;
+      renderNavState();
+      await loadObjects(false);
+    }
+
+    async function navigateForward() {
+      if (state.historyIndex >= state.history.length - 1) return;
+      state.historyIndex += 1;
+      const point = state.history[state.historyIndex];
+      if (!point) return;
+      if (point.bucket !== state.currentBucket) {
+        await selectBucket(point.bucket);
+      }
+      state.currentPrefix = point.prefix;
+      renderNavState();
+      await loadObjects(false);
+    }
+
+    async function navigateUp() {
+      if (!state.currentPrefix) return;
+      const next = parentPrefix(state.currentPrefix);
+      await navigateTo(next, true);
+    }
+
+    async function refreshCurrentFolder() {
+      await loadObjects(false);
+    }
 
     function updateSortArrows() {
       $$("th[data-sort]").forEach((th) => {
         const arrow = th.querySelector(".sort-arrow");
-        if (th.dataset.sort === sortKey) {
-          arrow.textContent = sortAsc ? " \u25B2" : " \u25BC";
-        } else {
-          arrow.textContent = "";
-        }
+        arrow.textContent = th.dataset.sort === state.sortKey ? (state.sortAsc ? "▲" : "▼") : "";
       });
     }
 
-    // --- Breadcrumbs ---
+    function fileIcon(name) {
+      const ext = (name.split(".").pop() || "").toLowerCase();
+      if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) return "&#128443;";
+      if (["mp3", "wav", "flac", "ogg"].includes(ext)) return "&#127925;";
+      if (["mp4", "mkv", "avi", "mov"].includes(ext)) return "&#127909;";
+      if (["zip", "gz", "tar", "7z", "rar"].includes(ext)) return "&#128230;";
+      if (["pdf", "doc", "docx"].includes(ext)) return "&#128196;";
+      if (["js", "ts", "json", "py", "go", "java", "sh", "yml", "yaml"].includes(ext)) return "&#128187;";
+      return "&#128196;";
+    }
 
-    function renderBreadcrumbs() {
-      const bc = $("#breadcrumbs");
-      const parts = currentPrefix ? currentPrefix.replace(/\/$/, "").split("/") : [];
+    async function enqueueOperation(type, payload) {
+      await api("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type, payload }),
+      });
+      await loadOperations();
+    }
 
-      let html = `<span class="crumb" data-path="">${escHtml(currentBucket || "")}</span>`;
+    async function runDeleteSelection() {
+      const paths = selectedArray();
+      if (!paths.length || !state.currentBucket) return;
+      if (!confirm(`Delete ${paths.length} selected item(s)?`)) return;
 
-      let accumulated = "";
-      parts.forEach((part) => {
-        if (!part) return;
-        accumulated += part + "/";
-        html += `<span class="crumb-sep">/</span>`;
-        html += `<span class="crumb" data-path="${escHtml(accumulated)}">${escHtml(part)}</span>`;
+      await enqueueOperation("delete", {
+        bucket: state.currentBucket,
+        targets: paths,
       });
 
-      bc.innerHTML = html;
+      await refreshCurrentFolder();
+    }
 
-      bc.querySelectorAll(".crumb").forEach((el) => {
-        el.addEventListener("click", () => {
-          const path = el.dataset.path;
-          if (path === currentPrefix) return;
-          navigateTo(path);
+    async function runRenameSelection() {
+      const paths = selectedArray();
+      if (paths.length !== 1) return;
+      const item = findItemByPath(paths[0]);
+      if (!item) return;
+
+      const initial = item.type === "folder" ? item.name : item.name;
+      const newName = prompt("Rename to:", initial);
+      if (!newName || newName === initial) return;
+
+      await enqueueOperation("rename", {
+        bucket: state.currentBucket,
+        source: paths[0],
+        newName,
+      });
+
+      await refreshCurrentFolder();
+    }
+
+    async function runPaste() {
+      if (!state.clipboard || !state.currentBucket) return;
+      const mode = state.clipboard.mode;
+      const entries = state.clipboard.entries;
+      if (!entries.length) return;
+
+      if (mode === "copy") {
+        await enqueueOperation("copy", {
+          bucket: state.currentBucket,
+          sources: entries,
+          destination: ensureFolderPrefix(state.currentPrefix),
+        });
+      } else if (mode === "cut") {
+        await enqueueOperation("move", {
+          bucket: state.currentBucket,
+          sources: entries,
+          destination: ensureFolderPrefix(state.currentPrefix),
+        });
+        state.clipboard = null;
+      }
+
+      await refreshCurrentFolder();
+    }
+
+    function setClipboard(mode) {
+      const entries = selectedArray();
+      if (!entries.length) return;
+      state.clipboard = {
+        mode,
+        entries,
+        bucket: state.currentBucket,
+      };
+      updateStatusBar();
+    }
+
+    function openContextMenu(x, y, item) {
+      const hasSelection = state.selected.size > 0;
+      const canRename = state.selected.size === 1;
+      const canPaste = !!state.clipboard;
+
+      const menu = $("#context-menu");
+      menu.innerHTML = `
+        <div class="menu-item" data-action="open">Open</div>
+        <div class="menu-item ${canRename ? "" : "disabled"}" data-action="rename">Rename</div>
+        <div class="menu-divider"></div>
+        <div class="menu-item ${hasSelection ? "" : "disabled"}" data-action="copy">Copy</div>
+        <div class="menu-item ${hasSelection ? "" : "disabled"}" data-action="cut">Cut</div>
+        <div class="menu-item ${canPaste ? "" : "disabled"}" data-action="paste">Paste</div>
+        <div class="menu-divider"></div>
+        <div class="menu-item ${hasSelection ? "" : "disabled"}" data-action="delete">Delete</div>
+        <div class="menu-item" data-action="refresh">Refresh</div>
+      `;
+
+      menu.style.display = "block";
+      menu.style.left = `${x}px`;
+      menu.style.top = `${y}px`;
+
+      menu.querySelectorAll(".menu-item").forEach((el) => {
+        if (el.classList.contains("disabled")) return;
+        el.addEventListener("click", async () => {
+          const action = el.dataset.action;
+          closeContextMenu();
+
+          if (action === "open" && item) {
+            activateItem(item);
+          } else if (action === "rename") {
+            await runRenameSelection();
+          } else if (action === "copy") {
+            setClipboard("copy");
+          } else if (action === "cut") {
+            setClipboard("cut");
+          } else if (action === "paste") {
+            await runPaste();
+          } else if (action === "delete") {
+            await runDeleteSelection();
+          } else if (action === "refresh") {
+            await refreshCurrentFolder();
+          }
         });
       });
     }
 
-    // --- File icon ---
-
-    function getFileIcon(name) {
-      const ext = (name.split(".").pop() || "").toLowerCase();
-      const audio = ["mp3", "wav", "flac", "aac", "ogg", "m4a"];
-      const video = ["mp4", "mkv", "avi", "mov", "webm"];
-      const image = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"];
-      const doc = ["pdf", "doc", "docx"];
-      const archive = ["zip", "gz", "tar", "rar", "7z"];
-      const code = ["js", "ts", "py", "json", "yaml", "yml", "toml", "sql", "sh"];
-
-      if (audio.includes(ext)) return "\u{1F3B5}";
-      if (video.includes(ext)) return "\u{1F3AC}";
-      if (image.includes(ext)) return "\u{1F5BC}";
-      if (doc.includes(ext)) return "\u{1F4C4}";
-      if (archive.includes(ext)) return "\u{1F4E6}";
-      if (code.includes(ext)) return "\u{1F4BB}";
-      return "\u{1F4C5}";
+    function closeContextMenu() {
+      const menu = $("#context-menu");
+      menu.style.display = "none";
+      menu.innerHTML = "";
     }
 
-    // --- UI state ---
+    function moveFocusBy(delta, withShift) {
+      if (!state.visible.length) return;
+      const paths = state.visible.map(pathForItem);
+      let idx = state.focusedPath ? paths.indexOf(state.focusedPath) : -1;
+      if (idx === -1) idx = 0;
+      idx = Math.max(0, Math.min(paths.length - 1, idx + delta));
+      const path = paths[idx];
 
-    function showLoading(show) { $("#loading").style.display = show ? "block" : "none"; }
-    function showError(msg) { const el = $("#error"); el.style.display = msg ? "block" : "none"; el.textContent = msg || ""; }
-    function showEmpty(show) { $("#empty").style.display = show ? "block" : "none"; }
-
-    function updateStatus() {
-      const count = items.length;
-      const extra = allLoaded ? "" : " (+more)";
-      $("#status").textContent = count ? `${count} item${count === 1 ? "" : "s"}${extra}` : "";
-    }
-
-    // --- Search filter ---
-
-    let searchTimeout;
-    $("#search").addEventListener("input", () => {
-      clearTimeout(searchTimeout);
-      searchTimeout = setTimeout(renderTable, 150);
-    });
-
-    // --- Keyboard navigation ---
-
-    document.addEventListener("keydown", (e) => {
-      if (e.target === $("#search")) return;
-
-      // Arrow keys to navigate rows
-      const rows = [...$$("tbody tr")];
-      if (!rows.length) return;
-
-      const current = document.activeElement;
-      const idx = rows.indexOf(current);
-
-      if (e.key === "ArrowDown" && idx < rows.length - 1) {
-        e.preventDefault();
-        rows[idx + 1].focus();
-      } else if (e.key === "ArrowUp" && idx > 0) {
-        e.preventDefault();
-        rows[idx - 1].focus();
-      } else if (e.key === "Enter" && current.closest("tr")) {
-        current.closest("tr").click();
-      } else if (e.key === "Backspace" && currentPrefix) {
-        e.preventDefault();
-        goUp();
-      } else if (e.key === "/" || (e.key === "f" && (e.ctrlKey || e.metaKey))) {
-        e.preventDefault();
-        $("#search").focus();
+      if (withShift && state.anchorPath && paths.includes(state.anchorPath)) {
+        const a = paths.indexOf(state.anchorPath);
+        const [start, end] = a < idx ? [a, idx] : [idx, a];
+        state.selected.clear();
+        for (let i = start; i <= end; i += 1) state.selected.add(paths[i]);
+      } else {
+        state.selected.clear();
+        state.selected.add(path);
+        state.anchorPath = path;
       }
-    });
 
-    function goUp() {
-      const parts = currentPrefix.replace(/\/$/, "").split("/");
-      parts.pop();
-      navigateTo(parts.length ? parts.join("/") + "/" : "");
+      state.focusedPath = path;
+      renderTable();
+
+      const row = $("#tbody").querySelector(`tr[data-path="${CSS.escape(path)}"]`);
+      row?.scrollIntoView({ block: "nearest" });
     }
 
-    // --- Infinite scroll for pagination ---
+    function updateStatusBar() {
+      const total = state.visible.length;
+      const selected = state.selected.size;
+      const queue = state.operations.filter((op) => op.status === "queued").length;
+      const running = state.operations.filter((op) => op.status === "running").length;
+      const failed = state.operations.filter((op) => op.status === "failed").length;
+      const more = state.allLoaded ? "" : " (+more)";
 
-    $("#table-wrap").addEventListener("scroll", () => {
-      const el = $("#table-wrap");
-      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 50 && allLoaded === false && !$("#loading").style.display.includes("block")) {
-        loadObjects(true);
+      $("#status-left").textContent = `${total} item(s)${more} | ${selected} selected`;
+      const clip = state.clipboard ? `${state.clipboard.mode.toUpperCase()}: ${state.clipboard.entries.length}` : "Clipboard: empty";
+      $("#status-right").textContent = `Ops Q:${queue} R:${running} F:${failed} | ${clip}`;
+    }
+
+    async function loadOperations() {
+      try {
+        const data = await api("/api/operations");
+        state.operations = data.operations || [];
+        renderOperations();
+      } catch (err) {
+        const list = $("#ops-list");
+        list.innerHTML = `<div style="padding:10px;color:#b42318">${escHtml(err.message)}</div>`;
       }
-    });
+    }
 
-    // --- Init ---
+    function renderOperations() {
+      const list = $("#ops-list");
+      if (!state.operations.length) {
+        list.innerHTML = '<div style="padding:10px;color:#5f6b7a">No operations yet.</div>';
+        updateStatusBar();
+        return;
+      }
 
-    loadBuckets();
+      list.innerHTML = state.operations
+        .map((op) => {
+          const p = op.progress || {};
+          const total = p.total || 0;
+          const completed = p.completed || 0;
+          const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+          const summary = op.type.toUpperCase();
+          const details = op.status === "failed" && op.error ? op.error : `${p.message || ""}${total ? ` (${completed}/${total}, ${pct}%)` : ""}`;
+          return `<div class="op-row ${op.status}">
+            <div>
+              <div><strong>${summary}</strong></div>
+              <div class="op-meta">${escHtml(details || statusText(op))}</div>
+            </div>
+            <div class="op-status ${op.status}">${escHtml(op.status)}</div>
+            <button class="retry-btn" data-op-id="${escHtml(op.id)}">Retry</button>
+          </div>`;
+        })
+        .join("");
+
+      list.querySelectorAll(".retry-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const opId = btn.dataset.opId;
+          await api(`/api/operations/${encodeURIComponent(opId)}/retry`, { method: "POST" });
+          await loadOperations();
+        });
+      });
+
+      updateStatusBar();
+    }
+
+    function attachEvents() {
+      $("#nav-back").addEventListener("click", navigateBack);
+      $("#nav-forward").addEventListener("click", navigateForward);
+      $("#nav-up").addEventListener("click", navigateUp);
+      $("#nav-refresh").addEventListener("click", refreshCurrentFolder);
+
+      $$("th[data-sort]").forEach((th) => {
+        th.addEventListener("click", () => {
+          const key = th.dataset.sort;
+          if (state.sortKey === key) state.sortAsc = !state.sortAsc;
+          else {
+            state.sortKey = key;
+            state.sortAsc = true;
+          }
+          updateSortArrows();
+          renderTable();
+        });
+      });
+
+      let searchTimer;
+      $("#search").addEventListener("input", () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(renderTable, 120);
+      });
+
+      $("#table-wrap").addEventListener("scroll", async () => {
+        const el = $("#table-wrap");
+        if (state.loading || state.allLoaded || !state.continuationToken) return;
+        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) {
+          await loadObjects(true);
+        }
+      });
+
+      document.addEventListener("click", () => closeContextMenu());
+
+      $("#table-wrap").addEventListener("contextmenu", (e) => {
+        if (e.target.closest("tr")) return;
+        e.preventDefault();
+        openContextMenu(e.clientX, e.clientY, null);
+      });
+
+      document.addEventListener("keydown", async (e) => {
+        const inInput = e.target === $("#search");
+
+        if (!inInput && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+          e.preventDefault();
+          state.selected = new Set(state.visible.map(pathForItem));
+          state.focusedPath = state.visible[0] ? pathForItem(state.visible[0]) : null;
+          state.anchorPath = state.focusedPath;
+          renderTable();
+          return;
+        }
+
+        if (!inInput && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") {
+          e.preventDefault();
+          setClipboard("copy");
+          return;
+        }
+
+        if (!inInput && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "x") {
+          e.preventDefault();
+          setClipboard("cut");
+          return;
+        }
+
+        if (!inInput && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+          e.preventDefault();
+          await runPaste();
+          return;
+        }
+
+        if (!inInput && e.key === "Delete") {
+          e.preventDefault();
+          await runDeleteSelection();
+          return;
+        }
+
+        if (!inInput && e.key === "F2") {
+          e.preventDefault();
+          await runRenameSelection();
+          return;
+        }
+
+        if (!inInput && e.key === "Backspace") {
+          e.preventDefault();
+          await navigateUp();
+          return;
+        }
+
+        if (!inInput && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+          e.preventDefault();
+          moveFocusBy(e.key === "ArrowDown" ? 1 : -1, e.shiftKey);
+          return;
+        }
+
+        if (!inInput && e.key === "Home") {
+          e.preventDefault();
+          moveFocusBy(-999999, e.shiftKey);
+          return;
+        }
+
+        if (!inInput && e.key === "End") {
+          e.preventDefault();
+          moveFocusBy(999999, e.shiftKey);
+          return;
+        }
+
+        if (!inInput && e.key === "Enter") {
+          e.preventDefault();
+          const path = state.focusedPath || selectedArray()[0];
+          if (!path) return;
+          const item = findItemByPath(path);
+          if (item) activateItem(item);
+          return;
+        }
+
+        if ((e.key === "f" && (e.ctrlKey || e.metaKey)) || e.key === "/") {
+          e.preventDefault();
+          $("#search").focus();
+        }
+      });
+    }
+
+    async function boot() {
+      attachEvents();
+      updateSortArrows();
+      renderNavState();
+      await loadBuckets();
+      await loadOperations();
+
+      state.opsTimer = setInterval(loadOperations, 1200);
+    }
+
+    boot();
   </script>
 </body>
 </html>

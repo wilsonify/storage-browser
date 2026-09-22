@@ -1,23 +1,60 @@
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { S3Client } from "@aws-sdk/client-s3";
 import { fromIni } from "@aws-sdk/credential-providers";
-import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { getRawAsset, isSea } from "node:sea";
 import { AwsS3Ops } from "./s3-ops.mjs";
 import { OperationStore } from "./operations-store.mjs";
 import { OperationsWorker } from "./operations-worker.mjs";
 
 const PORT = 3737;
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const appDir = isSea() ? process.cwd() : dirname(process.argv[1] || process.cwd());
+
+function resolveStateFilePath() {
+  const baseDir = process.env.LOCALAPPDATA || process.env.APPDATA || join(homedir(), ".s3-browser");
+  return join(baseDir, "s3-browser", "operations.json");
+}
+
+async function loadIndexHtml() {
+  if (isSea()) {
+    const bytes = getRawAsset("index.html");
+    return Buffer.from(bytes).toString("utf-8");
+  }
+
+  return readFile(join(appDir, "index.html"), "utf-8");
+}
+
+function openBrowser(url) {
+  if (process.env.S3_BROWSER_NO_OPEN === "1") return;
+
+  const options = { detached: true, stdio: "ignore" };
+  if (process.platform === "win32") {
+    const child = spawn("cmd", ["/c", "start", "", url], options);
+    child.unref();
+    return;
+  }
+
+  if (process.platform === "darwin") {
+    const child = spawn("open", [url], options);
+    child.unref();
+    return;
+  }
+
+  const child = spawn("xdg-open", [url], options);
+  child.unref();
+}
 
 const s3 = new S3Client({
   region: "us-east-1",
   credentials: fromIni({ profile: "personal" }),
 });
 const s3ops = new AwsS3Ops(s3);
-const operationStore = new OperationStore(join(__dirname, ".data", "operations.json"));
+const operationStore = new OperationStore(resolveStateFilePath());
 const operationWorker = new OperationsWorker({ store: operationStore, s3ops });
+const activeSockets = new Set();
 
 function json(res, data, status = 200) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -217,7 +254,7 @@ const server = createServer(async (req, res) => {
   // Serve index.html
   if (path === "/" || path === "/index.html") {
     try {
-      const html = await readFile(join(__dirname, "index.html"), "utf-8");
+      const html = await loadIndexHtml();
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(html);
     } catch {
@@ -278,9 +315,50 @@ const server = createServer(async (req, res) => {
   res.end("Not found");
 });
 
-await operationStore.init();
-operationWorker.start();
+let shutdownStarted = false;
+function shutdown(signal) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  console.log(`Shutting down (${signal})...`);
+  operationWorker.stop();
 
-server.listen(PORT, () => {
-  console.log(`S3 Browser running at http://localhost:${PORT}`);
+  // Ensure keep-alive sockets do not block server close.
+  for (const socket of activeSockets) {
+    socket.destroy();
+  }
+
+  server.close(() => {
+    console.log("S3 Browser stopped.");
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    process.exit(0);
+  }, 5000).unref();
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+async function start() {
+  await operationStore.init();
+  operationWorker.start();
+
+  server.on("connection", (socket) => {
+    activeSockets.add(socket);
+    socket.on("close", () => {
+      activeSockets.delete(socket);
+    });
+  });
+
+  server.listen(PORT, () => {
+    const url = `http://localhost:${PORT}`;
+    console.log(`S3 Browser running at ${url}`);
+    openBrowser(url);
+  });
+}
+
+start().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });

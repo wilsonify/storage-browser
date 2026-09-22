@@ -25,6 +25,14 @@ function baseName(keyOrPrefix) {
   return idx === -1 ? trimmed : trimmed.slice(idx + 1);
 }
 
+function throwIfCancelled(shouldCancel) {
+  if (typeof shouldCancel === "function" && shouldCancel()) {
+    const err = new Error("Operation cancelled");
+    err.name = "OperationCancelledError";
+    throw err;
+  }
+}
+
 export class AwsS3Ops {
   constructor(client) {
     this.client = client;
@@ -124,11 +132,12 @@ export class AwsS3Ops {
     }));
   }
 
-  async copyTargets({ bucket, sources, destination, onProgress }) {
+  async copyTargets({ bucket, sources, destination, onProgress, shouldCancel }) {
     const destinationPrefix = ensureFolderPrefix(destination);
     const copyPlan = [];
 
     for (const source of sources) {
+      throwIfCancelled(shouldCancel);
       if (source.endsWith("/")) {
         const folderName = baseName(source);
         const sourceKeys = await this.listAllKeysForPrefix(bucket, source);
@@ -152,6 +161,7 @@ export class AwsS3Ops {
 
     let completed = 0;
     for (const step of copyPlan) {
+      throwIfCancelled(shouldCancel);
       if (step.markerOnly) {
         await this.putEmptyFolderMarker(bucket, step.destinationKey);
       } else {
@@ -167,12 +177,17 @@ export class AwsS3Ops {
     };
   }
 
-  async moveTargets({ bucket, sources, destination, onProgress }) {
+  async moveTargets({ bucket, sources, destination, onProgress, shouldCancel }) {
     const destinationPrefix = ensureFolderPrefix(destination);
 
     for (const source of sources) {
+      throwIfCancelled(shouldCancel);
       if (source.endsWith("/") && destinationPrefix.startsWith(source)) {
         throw new Error("Cannot move a folder into itself");
+      }
+
+      if (destinationPrefix === parentPrefix(source)) {
+        throw new Error("Source and destination are the same");
       }
     }
 
@@ -180,6 +195,7 @@ export class AwsS3Ops {
     const copyPlan = [];
 
     for (const source of sources) {
+      throwIfCancelled(shouldCancel);
       if (source.endsWith("/")) {
         const folderName = baseName(source);
         const sourceKeys = await this.listAllKeysForPrefix(bucket, source);
@@ -205,6 +221,7 @@ export class AwsS3Ops {
 
     let completed = 0;
     for (const step of copyPlan) {
+      throwIfCancelled(shouldCancel);
       if (step.markerOnly) {
         await this.putEmptyFolderMarker(bucket, step.destinationKey);
       } else {
@@ -215,6 +232,7 @@ export class AwsS3Ops {
     }
 
     if (expanded.length > 0) {
+      throwIfCancelled(shouldCancel);
       await this.deleteKeys(bucket, expanded);
       completed += expanded.length;
       onProgress?.({ total: copyPlan.length + expanded.length, completed, message: "Deleting source" });
@@ -226,10 +244,11 @@ export class AwsS3Ops {
     };
   }
 
-  async deleteTargets({ bucket, targets, onProgress }) {
+  async deleteTargets({ bucket, targets, onProgress, shouldCancel }) {
     const keys = [];
 
     for (const target of targets) {
+      throwIfCancelled(shouldCancel);
       if (target.endsWith("/")) {
         const folderKeys = await this.listAllKeysForPrefix(bucket, target);
         keys.push(...folderKeys);
@@ -246,6 +265,7 @@ export class AwsS3Ops {
 
     let deleted = 0;
     for (let i = 0; i < keys.length; i += 1000) {
+      throwIfCancelled(shouldCancel);
       const chunk = keys.slice(i, i + 1000);
       await this.deleteKeys(bucket, chunk);
       deleted += chunk.length;
@@ -255,7 +275,7 @@ export class AwsS3Ops {
     return { deleted: keys.length };
   }
 
-  async renameTarget({ bucket, source, newName, onProgress }) {
+  async renameTarget({ bucket, source, newName, onProgress, shouldCancel }) {
     if (!newName || typeof newName !== "string") {
       throw new Error("Invalid newName");
     }
@@ -276,6 +296,7 @@ export class AwsS3Ops {
     const copyPlan = [];
     const deleteKeys = [];
 
+    throwIfCancelled(shouldCancel);
     if (source.endsWith("/")) {
       const sourceKeys = await this.listAllKeysForPrefix(bucket, source);
       if (sourceKeys.length === 0) {
@@ -295,6 +316,7 @@ export class AwsS3Ops {
 
     let completed = 0;
     for (const step of copyPlan) {
+      throwIfCancelled(shouldCancel);
       if (step.markerOnly) {
         await this.putEmptyFolderMarker(bucket, step.destinationKey);
       } else {
@@ -305,6 +327,7 @@ export class AwsS3Ops {
     }
 
     if (deleteKeys.length > 0) {
+      throwIfCancelled(shouldCancel);
       await this.deleteKeys(bucket, deleteKeys);
       completed += deleteKeys.length;
       onProgress?.({ total: copyPlan.length + deleteKeys.length, completed, message: "Deleting source" });

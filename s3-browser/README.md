@@ -13,6 +13,32 @@ npm test
 
 Then open **http://localhost:3737**
 
+## Single-file Windows distribution
+
+Build a standalone `exe` (includes Node runtime, backend, UI, and dependencies):
+
+```bash
+cd s3-browser
+npm install
+npm run package:win
+```
+
+Output:
+
+- `dist/s3-browser.exe`
+
+Run it from any directory:
+
+```bash
+path\to\s3-browser.exe
+```
+
+Notes:
+
+- The executable uses your existing AWS profile credentials (`personal`) from your local AWS config files.
+- Operation queue state is stored in `%LOCALAPPDATA%\s3-browser\operations.json` (or `%APPDATA%` fallback), not next to the executable.
+- Set `S3_BROWSER_NO_OPEN=1` to prevent automatic browser launch.
+
 ## How it works
 
 ```

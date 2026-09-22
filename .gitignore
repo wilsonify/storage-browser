@@ -29,3 +29,6 @@ amplify_outputs*
 amplifyconfiguration*
 
 .freebuff/
+
+# s3-browser runtime queue persistence
+s3-browser/.data/

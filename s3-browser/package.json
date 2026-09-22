@@ -4,10 +4,17 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "clean": "node scripts/clean.mjs",
+    "package:win": "npm run clean && node scripts/package-win.mjs",
+    "package": "npm run package:win"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.800.0",
     "@aws-sdk/credential-providers": "^3.800.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.9",
+    "postject": "^1.0.0-alpha.6"
   }
 }

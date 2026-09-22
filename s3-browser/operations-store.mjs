@@ -67,6 +67,7 @@ export class OperationStore {
         completed: 0,
         message: "Queued",
       },
+      cancelRequested: false,
       result: null,
     };
 
@@ -83,6 +84,7 @@ export class OperationStore {
     op.startedAt = nowIso();
     op.updatedAt = nowIso();
     op.error = null;
+    op.cancelRequested = false;
     op.progress.message = "Running";
     await this.persist();
     return op;
@@ -133,10 +135,48 @@ export class OperationStore {
     op.status = "queued";
     op.error = null;
     op.completedAt = null;
+    op.cancelRequested = false;
     op.updatedAt = nowIso();
     op.progress.message = "Queued (retry)";
     await this.persist();
     return op;
+  }
+
+  async markCancelled(id, reason = "Cancelled") {
+    const op = this.getById(id);
+    if (!op) return null;
+    op.status = "cancelled";
+    op.error = null;
+    op.completedAt = nowIso();
+    op.updatedAt = nowIso();
+    op.cancelRequested = false;
+    op.progress.message = reason;
+    await this.persist();
+    return op;
+  }
+
+  async cancel(id) {
+    const op = this.getById(id);
+    if (!op) return null;
+
+    if (op.status === "completed" || op.status === "failed" || op.status === "cancelled") {
+      return { op, changed: false, reason: "Operation already finished" };
+    }
+
+    if (op.status === "queued") {
+      const cancelled = await this.markCancelled(id);
+      return { op: cancelled, changed: true, reason: "Cancelled" };
+    }
+
+    if (op.status === "running") {
+      op.cancelRequested = true;
+      op.updatedAt = nowIso();
+      op.progress.message = "Cancelling";
+      await this.persist();
+      return { op, changed: true, reason: "Cancellation requested" };
+    }
+
+    return { op, changed: false, reason: "Unsupported operation state" };
   }
 
   getNextQueued() {

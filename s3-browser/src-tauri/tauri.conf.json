@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "S3 Browser",
+  "version": "0.1.0",
+  "identifier": "com.local.s3browser",
+  "build": {
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devUrl": "http://127.0.0.1:3737",
+    "frontendDist": "../tauri-dist"
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "externalBin": ["bin/s3-backend"],
+    "icon": ["icons/icon.ico"]
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  }
+}

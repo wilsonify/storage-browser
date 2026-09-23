@@ -10,7 +10,8 @@ import { AwsS3Ops } from "./s3-ops.mjs";
 import { OperationStore } from "./operations-store.mjs";
 import { OperationsWorker } from "./operations-worker.mjs";
 
-const PORT = 3737;
+const PORT = Number.parseInt(process.env.S3_BROWSER_PORT || "3737", 10);
+const HOST = process.env.S3_BROWSER_HOST || "127.0.0.1";
 const appDir = isSea() ? process.cwd() : dirname(process.argv[1] || process.cwd());
 
 function resolveStateFilePath() {
@@ -256,7 +257,7 @@ async function handleCancelOperation(_req, res, id) {
 }
 
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url, `http://localhost:${PORT}`);
+  const url = new URL(req.url, `http://${HOST}:${PORT}`);
   const path = url.pathname;
 
   if (path === "/assets/s3_browser_icon.svg") {
@@ -389,8 +390,8 @@ async function start() {
     });
   });
 
-  server.listen(PORT, () => {
-    const url = `http://localhost:${PORT}`;
+  server.listen(PORT, HOST, () => {
+    const url = `http://${HOST}:${PORT}`;
     console.log(`S3 Browser running at ${url}`);
     openBrowser(url);
   });

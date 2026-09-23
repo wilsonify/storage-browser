@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%" fill="none">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="50%" stop-color="#1E1B4B"/>
+      <stop offset="100%" stop-color="#090D16"/>
+    </linearGradient>
+    <linearGradient id="glassGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="40%" stop-color="#FFFFFF" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.35"/>
+    </linearGradient>
+    <linearGradient id="s3Orange" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF9900"/>
+      <stop offset="100%" stop-color="#EC7211"/>
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+    <linearGradient id="metalBucket" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="35%" stop-color="#64748B"/>
+      <stop offset="70%" stop-color="#475569"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+    <filter id="dropShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+    <filter id="glowOrange" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+    <filter id="glowCyan" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+  <rect x="48" y="48" width="416" height="416" rx="96" fill="#000000" opacity="0.3" filter="url(#dropShadow)"/>
+  <rect x="48" y="48" width="416" height="416" rx="96" fill="url(#bgGrad)" stroke="#334155" stroke-width="2"/>
+  <rect x="48" y="48" width="416" height="416" rx="96" fill="url(#glassGrad)"/>
+  <rect x="49" y="49" width="414" height="414" rx="95" fill="none" stroke="url(#cyanGrad)" stroke-width="1.5" opacity="0.4"/>
+  <g transform="translate(96, 100)">
+    <path d="M 12,0 L 308,0 C 314.6,0 320,5.4 320,12 L 320,48 L 0,48 L 0,12 C 0,5.4 5.4,0 12,0 Z" fill="#1E293B" opacity="0.95"/>
+    <circle cx="20" cy="24" r="5" fill="#EF4444"/>
+    <circle cx="36" cy="24" r="5" fill="#F59E0B"/>
+    <circle cx="52" cy="24" r="5" fill="#10B981"/>
+    <rect x="72" y="12" width="232" height="24" rx="12" fill="#0F172A" opacity="0.9"/>
+    <text x="88" y="28" font-family="Segoe UI, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#38BDF8" opacity="0.9">s3://localhost:9000</text>
+    <path d="M 0,48 L 320,48 L 320,280 C 320,286.6 314.6,292 308,292 L 12,292 C 5.4,292 0,286.6 0,280 Z" fill="#090D16" opacity="0.8" stroke="#334155" stroke-width="1"/>
+    <path d="M 0,110 L 320,110 M 0,170 L 320,170 M 0,230 L 320,230" stroke="#1E293B" stroke-width="1" stroke-dasharray="4 4" opacity="0.5"/>
+    <path d="M 100,48 L 100,292 M 220,48 L 220,292" stroke="#1E293B" stroke-width="1" stroke-dasharray="4 4" opacity="0.3"/>
+    <g transform="translate(160, 160)">
+      <path d="M -60,-10 C -60,-30 -42,-46 -22,-46 C -15,-46 -8,-44 -2,-40 C 5,-54 22,-62 40,-54 C 55,-47 62,-32 60,-16 C 72,-14 80,-4 80,10 C 80,26 68,38 52,38 L -42,38 C -58,38 -70,26 -70,10 C -70,-2 -60,-10 -60,-10 Z" fill="url(#cyanGrad)" opacity="0.15" filter="url(#glowCyan)"/>
+    </g>
+    <g transform="translate(160, 185)">
+      <ellipse cx="0" cy="45" rx="70" ry="24" fill="none" stroke="#38BDF8" stroke-width="2" opacity="0.3" filter="url(#glowCyan)"/>
+      <path d="M -60,15 C -60,28 0,38 60,15 L 60,42 C 60,55 -60,55 -60,42 Z" fill="url(#s3Orange)" filter="url(#glowOrange)"/>
+      <ellipse cx="0" cy="15" rx="60" ry="18" fill="#FFB84D"/>
+      <path d="M -60,-15 C -60,-2 0,8 60,-15 L 60,10 C 60,23 -60,23 -60,10 Z" fill="url(#metalBucket)"/>
+      <ellipse cx="0" cy="-15" rx="60" ry="18" fill="#475569"/>
+      <path d="M -60,-45 C -60,-32 0,-22 60,-45 L 60,-20 C 60,-7 -60,-7 -60,-20 Z" fill="url(#s3Orange)"/>
+      <ellipse cx="0" cy="-45" rx="60" ry="18" fill="#FFC266"/>
+      <ellipse cx="0" cy="-45" rx="50" ry="14" fill="#D97706"/>
+      <circle cx="-25" cy="-45" r="3.5" fill="#FFFFFF"/>
+      <circle cx="0" cy="-42" r="3.5" fill="#FFFFFF"/>
+      <circle cx="25" cy="-45" r="3.5" fill="#FFFFFF"/>
+    </g>
+    <g transform="translate(24, 70)">
+      <rect x="0" y="0" width="56" height="40" rx="8" fill="#1E293B" stroke="#38BDF8" stroke-width="1.5"/>
+      <path d="M 6,10 L 22,10 L 28,15 L 50,15 L 50,34 L 6,34 Z" fill="url(#cyanGrad)" opacity="0.4"/>
+      <circle cx="42" cy="28" r="3" fill="#38BDF8"/>
+    </g>
+    <g transform="translate(240, 70)">
+      <rect x="0" y="0" width="56" height="40" rx="8" fill="#1E293B" stroke="#FF9900" stroke-width="1.5"/>
+      <path d="M 12,20 L 24,12 L 36,20 L 36,28 L 24,34 L 12,28 Z" fill="none" stroke="#FF9900" stroke-width="2"/>
+      <circle cx="24" cy="23" r="3" fill="#FF9900"/>
+    </g>
+  </g>
+</svg>

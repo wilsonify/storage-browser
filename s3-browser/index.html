@@ -130,6 +130,13 @@
       color: #13395b;
     }
 
+    .bucket-item.drop-target {
+      border-left-color: var(--active-border);
+      background: #f7e6bc;
+      font-weight: 600;
+      color: #3d3012;
+    }
+
     #main {
       display: grid;
       grid-template-rows: auto auto 1fr auto 180px;
@@ -659,6 +666,7 @@
       anchorPath: null,
       clipboard: null,
       dragSources: [],
+      dragKind: null,
       operations: [],
       loading: false,
       opsTimer: null,
@@ -722,6 +730,112 @@
       return prefix.endsWith("/") ? prefix : `${prefix}/`;
     }
 
+    function normalizeDestinationPrefix(prefix) {
+      if (!prefix || prefix === "/") return "";
+      return prefix.startsWith("/") ? prefix.slice(1) : prefix;
+    }
+
+    function parseFileUri(value) {
+      if (!value || !value.startsWith("file://")) return null;
+      try {
+        const decoded = decodeURIComponent(value.replace("file://", ""));
+        if (/^\/[A-Za-z]:\//.test(decoded)) {
+          return decoded.slice(1).replace(/\//g, "\\");
+        }
+        return decoded.replace(/\//g, "\\");
+      } catch {
+        return null;
+      }
+    }
+
+    function extractLocalPathsFromDataTransfer(dataTransfer) {
+      const seen = new Set();
+      const out = [];
+
+      const addPath = (raw) => {
+        if (typeof raw !== "string") return;
+        const value = raw.trim();
+        if (!value || seen.has(value)) return;
+        seen.add(value);
+        out.push(value);
+      };
+
+      if (dataTransfer?.files) {
+        for (const file of dataTransfer.files) {
+          if (typeof file.path === "string" && file.path) {
+            addPath(file.path);
+          }
+        }
+      }
+
+      if (dataTransfer?.items) {
+        for (const item of dataTransfer.items) {
+          const f = typeof item.getAsFile === "function" ? item.getAsFile() : null;
+          if (f && typeof f.path === "string" && f.path) {
+            addPath(f.path);
+          }
+        }
+      }
+
+      for (const flavor of ["text/uri-list", "text/plain"]) {
+        const text = dataTransfer?.getData?.(flavor);
+        if (!text) continue;
+        text
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .forEach((line) => {
+            const parsed = parseFileUri(line);
+            if (parsed) addPath(parsed);
+          });
+      }
+
+      return out;
+    }
+
+    function isExternalDrop(dataTransfer) {
+      return Array.from(dataTransfer?.types || []).includes("Files");
+    }
+
+    async function enqueueLocalSyncOperation({ bucket, destination, sources }) {
+      if (!bucket || !Array.isArray(sources) || sources.length === 0) return;
+
+      await enqueueOperation("syncLocalToS3", {
+        bucket,
+        destination: normalizeDestinationPrefix(destination),
+        sources,
+      });
+    }
+
+    async function handleDropToDestination(event, bucket, destinationPrefix) {
+      const dataTransfer = event.dataTransfer;
+
+      if (state.dragKind === "internal" && state.dragSources.length) {
+        if (!bucket || bucket !== state.currentBucket) return;
+        await enqueueOperation("move", {
+          bucket,
+          sources: state.dragSources,
+          destination: ensureFolderPrefix(destinationPrefix || ""),
+        });
+        await refreshCurrentFolder();
+        return;
+      }
+
+      if (isExternalDrop(dataTransfer)) {
+        const sources = extractLocalPathsFromDataTransfer(dataTransfer);
+        if (sources.length === 0) {
+          setError("Unable to read local file paths from the dropped items.");
+          return;
+        }
+
+        await enqueueLocalSyncOperation({
+          bucket,
+          destination: destinationPrefix || "",
+          sources,
+        });
+      }
+    }
+
     function parentPrefix(prefix) {
       const trimmed = prefix.replace(/\/$/, "");
       const idx = trimmed.lastIndexOf("/");
@@ -775,6 +889,23 @@
 
         list.querySelectorAll(".bucket-item").forEach((el) => {
           el.addEventListener("click", () => selectBucket(el.dataset.bucket));
+
+          el.addEventListener("dragover", (e) => {
+            if (!isExternalDrop(e.dataTransfer)) return;
+            e.preventDefault();
+            el.classList.add("drop-target");
+            e.dataTransfer.dropEffect = "copy";
+          });
+
+          el.addEventListener("dragleave", () => {
+            el.classList.remove("drop-target");
+          });
+
+          el.addEventListener("drop", async (e) => {
+            el.classList.remove("drop-target");
+            e.preventDefault();
+            await handleDropToDestination(e, el.dataset.bucket, "");
+          });
         });
       } catch (err) {
         list.innerHTML = `<div class="panel-error">${escHtml(err.message)}</div>`;
@@ -944,20 +1075,24 @@
           const selected = selectedArray();
           const sourcePaths = selected.length && state.selected.has(path) ? selected : [path];
           state.dragSources = sourcePaths;
+          state.dragKind = "internal";
           e.dataTransfer.setData("text/plain", JSON.stringify(sourcePaths));
+          e.dataTransfer.setData("application/x-s3-browser-internal", "1");
           e.dataTransfer.effectAllowed = "move";
         });
 
         tr.addEventListener("dragend", () => {
           state.dragSources = [];
+          state.dragKind = null;
           $$(".drop-target").forEach((el) => el.classList.remove("drop-target"));
         });
 
         if (item.type === "folder") {
           tr.addEventListener("dragover", (e) => {
+            if (!(state.dragKind === "internal" || isExternalDrop(e.dataTransfer))) return;
             e.preventDefault();
             tr.classList.add("drop-target");
-            e.dataTransfer.dropEffect = "move";
+            e.dataTransfer.dropEffect = state.dragKind === "internal" ? "move" : "copy";
           });
 
           tr.addEventListener("dragleave", () => {
@@ -967,15 +1102,7 @@
           tr.addEventListener("drop", async (e) => {
             e.preventDefault();
             tr.classList.remove("drop-target");
-            if (!state.dragSources.length) return;
-
-            const destination = ensureFolderPrefix(item.path);
-            await enqueueOperation("move", {
-              bucket: state.currentBucket,
-              sources: state.dragSources,
-              destination,
-            });
-            await refreshCurrentFolder();
+            await handleDropToDestination(e, state.currentBucket, item.path);
           });
         }
       });
@@ -1367,6 +1494,18 @@
         if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) {
           await loadObjects(true);
         }
+      });
+
+      $("#table-wrap").addEventListener("dragover", (e) => {
+        if (!(state.dragKind === "internal" || isExternalDrop(e.dataTransfer))) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = state.dragKind === "internal" ? "move" : "copy";
+      });
+
+      $("#table-wrap").addEventListener("drop", async (e) => {
+        if (!(state.dragKind === "internal" || isExternalDrop(e.dataTransfer))) return;
+        e.preventDefault();
+        await handleDropToDestination(e, state.currentBucket, state.currentPrefix || "");
       });
 
       document.addEventListener("click", () => closeContextMenu());

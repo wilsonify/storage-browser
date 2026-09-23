@@ -7,11 +7,20 @@ import {
   ListObjectsV2Command,
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
+import { createReadStream } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
+import { basename, join, normalize, resolve } from "node:path";
 
 const MAX_EXPANDED_OBJECTS = 50000;
 
 function ensureFolderPrefix(value) {
   return value.endsWith("/") ? value : `${value}/`;
+}
+
+function normalizeDestinationPrefix(value) {
+  if (!value || value === "/") return "";
+  const trimmed = value.startsWith("/") ? value.slice(1) : value;
+  return ensureFolderPrefix(trimmed);
 }
 
 function parentPrefix(keyOrPrefix) {
@@ -49,6 +58,27 @@ function uniqueSources(sources) {
     out.push(raw);
   }
   return out;
+}
+
+function normalizeLocalPath(source) {
+  if (typeof source !== "string" || !source.trim()) return null;
+  return normalize(resolve(source.trim()));
+}
+
+function uniqueLocalSources(sources) {
+  const seen = new Set();
+  const out = [];
+  for (const source of sources || []) {
+    const normalized = normalizeLocalPath(source);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function toS3KeyPart(value) {
+  return value.replace(/\\/g, "/");
 }
 
 function sourceContainsPath(source, path) {
@@ -199,6 +229,155 @@ export class AwsS3Ops {
       Key: ensureFolderPrefix(prefix),
       Body: "",
     }));
+  }
+
+  async keyExists(bucket, key) {
+    try {
+      await this.client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      return true;
+    } catch (err) {
+      if (
+        err?.name === "NotFound"
+        || err?.$metadata?.httpStatusCode === 404
+        || err?.Code === "NotFound"
+      ) {
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  async collectLocalUploadPlan(sourcePath, shouldCancel) {
+    const sourceStat = await stat(sourcePath);
+
+    if (sourceStat.isFile()) {
+      return {
+        rootName: basename(sourcePath),
+        files: [{ absPath: sourcePath, relPath: basename(sourcePath), size: sourceStat.size }],
+        emptyFolders: [],
+      };
+    }
+
+    if (!sourceStat.isDirectory()) {
+      throw new Error(`Unsupported source type: ${sourcePath}`);
+    }
+
+    const rootName = basename(sourcePath);
+    const files = [];
+    const emptyFolders = [];
+
+    const walk = async (dirPath, relDir) => {
+      throwIfCancelled(shouldCancel);
+      const entries = await readdir(dirPath, { withFileTypes: true });
+      if (entries.length === 0 && relDir) {
+        emptyFolders.push(relDir);
+        return;
+      }
+
+      for (const entry of entries) {
+        throwIfCancelled(shouldCancel);
+        const absPath = join(dirPath, entry.name);
+        const relPath = relDir ? join(relDir, entry.name) : entry.name;
+
+        if (entry.isDirectory()) {
+          await walk(absPath, relPath);
+        } else if (entry.isFile()) {
+          const entryStat = await stat(absPath);
+          files.push({ absPath, relPath, size: entryStat.size });
+        }
+      }
+    };
+
+    await walk(sourcePath, "");
+    return { rootName, files, emptyFolders };
+  }
+
+  async syncLocalSourcesToS3({ bucket, sources, destination, overwrite = false, onProgress, shouldCancel }) {
+    const destinationPrefix = normalizeDestinationPrefix(destination);
+    const normalizedSources = uniqueLocalSources(sources);
+
+    if (normalizedSources.length === 0) {
+      onProgress?.({ total: 0, completed: 0, message: "No-op" });
+      return {
+        uploaded: 0,
+        skippedExisting: 0,
+        folderMarkers: 0,
+        noop: true,
+      };
+    }
+
+    const uploadPlan = [];
+    let totalSourceFiles = 0;
+
+    for (const sourcePath of normalizedSources) {
+      throwIfCancelled(shouldCancel);
+      const plan = await this.collectLocalUploadPlan(sourcePath, shouldCancel);
+
+      const basePrefix = destinationPrefix + toS3KeyPart(plan.rootName);
+      for (const file of plan.files) {
+        const relPart = toS3KeyPart(file.relPath);
+        uploadPlan.push({
+          type: "file",
+          absPath: file.absPath,
+          key: `${basePrefix}/${relPart}`,
+          size: file.size,
+        });
+      }
+
+      for (const emptyRelDir of plan.emptyFolders) {
+        const relPart = toS3KeyPart(emptyRelDir);
+        uploadPlan.push({
+          type: "marker",
+          key: `${basePrefix}/${relPart}/`,
+        });
+      }
+
+      totalSourceFiles += plan.files.length;
+    }
+
+    onProgress?.({ total: uploadPlan.length, completed: 0, message: "Uploading" });
+
+    let completed = 0;
+    let uploaded = 0;
+    let skippedExisting = 0;
+    let folderMarkers = 0;
+
+    for (const step of uploadPlan) {
+      throwIfCancelled(shouldCancel);
+
+      if (!overwrite) {
+        const exists = await this.keyExists(bucket, step.key);
+        if (exists) {
+          skippedExisting += 1;
+          completed += 1;
+          onProgress?.({ total: uploadPlan.length, completed, message: "Uploading" });
+          continue;
+        }
+      }
+
+      if (step.type === "marker") {
+        await this.putEmptyFolderMarker(bucket, step.key);
+        folderMarkers += 1;
+      } else {
+        await this.client.send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: step.key,
+          Body: createReadStream(step.absPath),
+        }));
+        uploaded += 1;
+      }
+
+      completed += 1;
+      onProgress?.({ total: uploadPlan.length, completed, message: "Uploading" });
+    }
+
+    return {
+      uploaded,
+      skippedExisting,
+      folderMarkers,
+      sourceFiles: totalSourceFiles,
+      destination: destinationPrefix,
+    };
   }
 
   async copyTargets({ bucket, sources, destination, onProgress, shouldCancel }) {

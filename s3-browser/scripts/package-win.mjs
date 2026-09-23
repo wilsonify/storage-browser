@@ -22,6 +22,7 @@ const TIMEOUTS = {
 };
 
 const strictIconStamp = process.env.S3_BROWSER_STRICT_ICON_STAMP === "1";
+const skipIconStamp = process.env.S3_BROWSER_SKIP_ICON_STAMP === "1";
 
 function esbuildCommand() {
   if (process.platform === "win32") {
@@ -103,7 +104,7 @@ await runCommandStep({
 });
 
 const rcedit = rceditCommandArgs();
-if (rcedit) {
+if (rcedit && !skipIconStamp) {
   try {
     await runCommandStep({
       stepLabel: "4/4 Stamp EXE icon",

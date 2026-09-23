@@ -77,6 +77,15 @@ export class OperationsWorker {
           onProgress,
           shouldCancel,
         });
+      } else if (op.type === "syncLocalToS3") {
+        result = await this.s3ops.syncLocalSourcesToS3({
+          bucket: op.payload.bucket,
+          sources: op.payload.sources,
+          destination: op.payload.destination,
+          overwrite: op.payload.overwrite === true,
+          onProgress,
+          shouldCancel,
+        });
       } else {
         throw new Error(`Unsupported operation type: ${op.type}`);
       }

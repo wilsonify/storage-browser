@@ -181,3 +181,30 @@ test("running operation can be cancelled cooperatively", async () => {
   const cancelled = store.getById(op.id);
   assert.equal(cancelled.status, "cancelled");
 });
+
+test("worker runs syncLocalToS3 operation via shared queue", async () => {
+  const store = await createStore();
+
+  const s3ops = {
+    async syncLocalSourcesToS3({ onProgress }) {
+      onProgress({ total: 3, completed: 1, message: "Uploading" });
+      onProgress({ total: 3, completed: 3, message: "Uploading" });
+      return { uploaded: 2, skippedExisting: 1 };
+    },
+  };
+
+  const worker = new OperationsWorker({ store, s3ops });
+  const op = await store.enqueue("syncLocalToS3", {
+    bucket: "demo",
+    sources: ["C:\\Users\\demo\\Music"],
+    destination: "songs/",
+  });
+
+  await worker.wake();
+  const completed = await waitForStatus(store, op.id, "completed");
+
+  assert.equal(completed.result.uploaded, 2);
+  assert.equal(completed.result.skippedExisting, 1);
+  assert.equal(completed.progress.total, 3);
+  assert.equal(completed.progress.completed, 3);
+});

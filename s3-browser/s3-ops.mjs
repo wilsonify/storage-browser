@@ -8,7 +8,7 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 import { createReadStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, join, normalize, resolve } from "node:path";
 
 const MAX_EXPANDED_OBJECTS = 50000;
@@ -78,7 +78,7 @@ function uniqueLocalSources(sources) {
 }
 
 function toS3KeyPart(value) {
-  return value.replace(/\\/g, "/");
+  return value.replaceAll("\\", "/");
 }
 
 function sourceContainsPath(source, path) {
@@ -231,17 +231,20 @@ export class AwsS3Ops {
     }));
   }
 
-  async keyExists(bucket, key) {
+  async getObjectSize(bucket, key) {
     try {
-      await this.client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
-      return true;
+      const head = await this.client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+      return {
+        exists: true,
+        size: Number.isFinite(head?.ContentLength) ? Number(head.ContentLength) : null,
+      };
     } catch (err) {
       if (
         err?.name === "NotFound"
         || err?.$metadata?.httpStatusCode === 404
         || err?.Code === "NotFound"
       ) {
-        return false;
+        return { exists: false, size: null };
       }
       throw err;
     }
@@ -252,9 +255,11 @@ export class AwsS3Ops {
 
     if (sourceStat.isFile()) {
       return {
-        rootName: basename(sourcePath),
+        rootName: null,
         files: [{ absPath: sourcePath, relPath: basename(sourcePath), size: sourceStat.size }],
         emptyFolders: [],
+        skippedSymlinks: [],
+        skippedOutsideRoot: [],
       };
     }
 
@@ -263,11 +268,28 @@ export class AwsS3Ops {
     }
 
     const rootName = basename(sourcePath);
+    const rootRealPath = await realpath(sourcePath);
+    const rootRealPrefix = rootRealPath.endsWith("\\") || rootRealPath.endsWith("/")
+      ? rootRealPath
+      : `${rootRealPath}\\`;
     const files = [];
     const emptyFolders = [];
+    const skippedSymlinks = [];
+    const skippedOutsideRoot = [];
+    const visitedDirs = new Set();
 
     const walk = async (dirPath, relDir) => {
       throwIfCancelled(shouldCancel);
+
+      const realDirPath = await realpath(dirPath);
+      if (!(realDirPath === rootRealPath || realDirPath.startsWith(rootRealPrefix))) {
+        if (relDir) skippedOutsideRoot.push(toS3KeyPart(relDir));
+        return;
+      }
+
+      if (visitedDirs.has(realDirPath)) return;
+      visitedDirs.add(realDirPath);
+
       const entries = await readdir(dirPath, { withFileTypes: true });
       if (entries.length === 0 && relDir) {
         emptyFolders.push(relDir);
@@ -278,18 +300,23 @@ export class AwsS3Ops {
         throwIfCancelled(shouldCancel);
         const absPath = join(dirPath, entry.name);
         const relPath = relDir ? join(relDir, entry.name) : entry.name;
+        const entryStat = await lstat(absPath);
 
-        if (entry.isDirectory()) {
+        if (entryStat.isSymbolicLink()) {
+          skippedSymlinks.push(toS3KeyPart(relPath));
+          continue;
+        }
+
+        if (entryStat.isDirectory() || entry.isDirectory()) {
           await walk(absPath, relPath);
-        } else if (entry.isFile()) {
-          const entryStat = await stat(absPath);
+        } else if (entryStat.isFile() || entry.isFile()) {
           files.push({ absPath, relPath, size: entryStat.size });
         }
       }
     };
 
     await walk(sourcePath, "");
-    return { rootName, files, emptyFolders };
+    return { rootName, files, emptyFolders, skippedSymlinks, skippedOutsideRoot };
   }
 
   async syncLocalSourcesToS3({ bucket, sources, destination, overwrite = false, onProgress, shouldCancel }) {
@@ -308,31 +335,40 @@ export class AwsS3Ops {
 
     const uploadPlan = [];
     let totalSourceFiles = 0;
+    let skippedSymlinkCount = 0;
+    let skippedOutsideRootCount = 0;
 
     for (const sourcePath of normalizedSources) {
       throwIfCancelled(shouldCancel);
       const plan = await this.collectLocalUploadPlan(sourcePath, shouldCancel);
 
-      const basePrefix = destinationPrefix + toS3KeyPart(plan.rootName);
+      const folderBasePrefix = plan.rootName
+        ? `${destinationPrefix}${toS3KeyPart(plan.rootName)}/`
+        : destinationPrefix;
+
       for (const file of plan.files) {
         const relPart = toS3KeyPart(file.relPath);
         uploadPlan.push({
           type: "file",
           absPath: file.absPath,
-          key: `${basePrefix}/${relPart}`,
+          key: `${folderBasePrefix}${relPart}`,
           size: file.size,
         });
       }
 
-      for (const emptyRelDir of plan.emptyFolders) {
-        const relPart = toS3KeyPart(emptyRelDir);
-        uploadPlan.push({
-          type: "marker",
-          key: `${basePrefix}/${relPart}/`,
-        });
+      if (plan.rootName) {
+        for (const emptyRelDir of plan.emptyFolders) {
+          const relPart = toS3KeyPart(emptyRelDir);
+          uploadPlan.push({
+            type: "marker",
+            key: `${folderBasePrefix}${relPart}/`,
+          });
+        }
       }
 
       totalSourceFiles += plan.files.length;
+      skippedSymlinkCount += plan.skippedSymlinks.length;
+      skippedOutsideRootCount += plan.skippedOutsideRoot.length;
     }
 
     onProgress?.({ total: uploadPlan.length, completed: 0, message: "Uploading" });
@@ -340,18 +376,31 @@ export class AwsS3Ops {
     let completed = 0;
     let uploaded = 0;
     let skippedExisting = 0;
+    let uploadedUpdated = 0;
+    let uploadedNew = 0;
     let folderMarkers = 0;
 
     for (const step of uploadPlan) {
       throwIfCancelled(shouldCancel);
 
+      let existingMeta = { exists: false, size: null };
+
       if (!overwrite) {
-        const exists = await this.keyExists(bucket, step.key);
-        if (exists) {
-          skippedExisting += 1;
-          completed += 1;
-          onProgress?.({ total: uploadPlan.length, completed, message: "Uploading" });
-          continue;
+        existingMeta = await this.getObjectSize(bucket, step.key);
+        if (existingMeta.exists) {
+          if (step.type === "marker") {
+            skippedExisting += 1;
+            completed += 1;
+            onProgress?.({ total: uploadPlan.length, completed, message: "Uploading" });
+            continue;
+          }
+
+          if (existingMeta.size === step.size) {
+            skippedExisting += 1;
+            completed += 1;
+            onProgress?.({ total: uploadPlan.length, completed, message: "Uploading" });
+            continue;
+          }
         }
       }
 
@@ -365,6 +414,8 @@ export class AwsS3Ops {
           Body: createReadStream(step.absPath),
         }));
         uploaded += 1;
+        if (existingMeta.exists) uploadedUpdated += 1;
+        else uploadedNew += 1;
       }
 
       completed += 1;
@@ -373,9 +424,14 @@ export class AwsS3Ops {
 
     return {
       uploaded,
+      uploadedNew,
+      uploadedUpdated,
       skippedExisting,
+      skippedUnchanged: skippedExisting,
       folderMarkers,
       sourceFiles: totalSourceFiles,
+      skippedSymlinkCount,
+      skippedOutsideRootCount,
       destination: destinationPrefix,
     };
   }

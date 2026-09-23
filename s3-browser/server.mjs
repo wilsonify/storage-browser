@@ -152,7 +152,7 @@ async function handleEnqueueOperation(req, res) {
   }
 
   const { type, payload } = body || {};
-  if (!["move", "copy", "delete", "rename"].includes(type)) {
+  if (!["move", "copy", "delete", "rename", "syncLocalToS3"].includes(type)) {
     return json(res, { error: "Invalid operation type" }, 400);
   }
   if (!payload || typeof payload !== "object") {
@@ -176,6 +176,15 @@ async function handleEnqueueOperation(req, res) {
     return json(res, { error: "Missing or invalid destination" }, 400);
   }
 
+  if (type === "syncLocalToS3") {
+    if (!isNonEmptyStringArray(payload.sources)) {
+      return json(res, { error: "Missing or invalid local sources" }, 400);
+    }
+    if (typeof payload.destination !== "string") {
+      return json(res, { error: "Missing or invalid destination" }, 400);
+    }
+  }
+
   if (type === "delete" && !isNonEmptyStringArray(payload.targets)) {
     return json(res, { error: "Missing or invalid targets" }, 400);
   }
@@ -195,6 +204,39 @@ async function handleEnqueueOperation(req, res) {
     json(res, operation, 202);
   } catch (err) {
     json(res, { error: err.message }, 500);
+  }
+}
+
+async function handleSyncFolderToS3(req, res) {
+  let body;
+  try {
+    body = JSON.parse(await readBody(req));
+  } catch {
+    return json(res, { error: "Invalid JSON body" }, 400);
+  }
+
+  const { bucket, sources, destination = "", overwrite = false } = body || {};
+  if (!bucket || typeof bucket !== "string") {
+    return json(res, { error: "Missing bucket" }, 400);
+  }
+  if (!Array.isArray(sources) || sources.length === 0 || sources.some((s) => typeof s !== "string" || !s.trim())) {
+    return json(res, { error: "Missing or invalid local sources" }, 400);
+  }
+  if (typeof destination !== "string") {
+    return json(res, { error: "Missing or invalid destination" }, 400);
+  }
+
+  try {
+    const operation = await operationStore.enqueue("syncLocalToS3", {
+      bucket,
+      sources,
+      destination,
+      overwrite: overwrite === true,
+    });
+    operationWorker.wake();
+    return json(res, operation, 202);
+  } catch (err) {
+    return json(res, { error: err.message }, 500);
   }
 }
 
@@ -328,6 +370,11 @@ const server = createServer(async (req, res) => {
 
   if (path === "/api/operations" && req.method === "POST") {
     return handleEnqueueOperation(req, res);
+  }
+
+  // API: generic local-folder/file -> S3 transfer enqueue
+  if (path === "/api/sync-folder-to-s3" && req.method === "POST") {
+    return handleSyncFolderToS3(req, res);
   }
 
   const operationMatch = path.match(/^\/api\/operations\/([^/]+)$/);

@@ -49,6 +49,51 @@ index.html  →  Node.js server (localhost:3737)  →  AWS SDK  →  S3
 - **`server.mjs`** — tiny Node.js HTTP server that proxies S3 API calls using `@aws-sdk/client-s3` with your local `~/.aws/credentials` `personal` profile
 - **No credentials in the browser** — the server reads credentials from your existing AWS CLI profile via `fromIni()`, never exposes them over HTTP
 
+## Cloudflare Workers deployment
+
+The same frontend can also be served from a Cloudflare Worker while keeping the Windows/Tauri app untouched.
+
+### Files added
+
+- `wrangler.jsonc` — minimal Worker configuration with static assets
+- `cloudflare/worker.mjs` — Worker entry point implementing the existing `/api/*` endpoints
+- `cloudflare/s3-adapter.mjs` — AWS S3 adapter that validates bucket/key parameters and keeps credentials in Worker secrets
+- `cloudflare/worker.test.mjs` — validation tests for bucket/key safety
+
+### Local setup
+
+```bash
+cd s3-browser
+npm install
+cp .dev.vars.example .dev.vars
+# edit .dev.vars with your AWS keys and bucket
+npx wrangler dev --local
+```
+
+### Deploy
+
+```bash
+cd s3-browser
+npx wrangler login
+npx wrangler deploy
+```
+
+Set secrets in the Cloudflare dashboard or with Wrangler:
+
+```bash
+npx wrangler secret put AWS_ACCESS_KEY_ID
+npx wrangler secret put AWS_SECRET_ACCESS_KEY
+npx wrangler secret put AWS_REGION
+```
+
+Recommended values:
+
+- `AWS_REGION=us-east-1`
+- `S3_BROWSER_BUCKET=064592191516-audio`
+- `ALLOWED_BUCKETS=064592191516-audio`
+
+The default bucket is configurable and is not hard-coded inside the UI. The Worker validates bucket and key names to prevent traversal and rejects requests outside the configured allow-list.
+
 ## What it does
 
 - Lists S3 buckets in a sidebar

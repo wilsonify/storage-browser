@@ -5,13 +5,16 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test",
+    "test:cloudflare": "node --test cloudflare/worker.test.mjs",
     "clean": "node scripts/clean.mjs",
     "timeout:probe": "node scripts/timeout-probe.mjs",
     "build:sidecar": "node scripts/build-sidecar.mjs",
     "package:win": "npm run clean && node scripts/package-win.mjs",
     "package": "npm run package:win",
     "tauri:dev": "npm run build:sidecar && tauri dev",
-    "tauri:build": "npm run build:sidecar && tauri build"
+    "tauri:build": "npm run build:sidecar && tauri build",
+    "cf:dev": "wrangler dev --local",
+    "cf:deploy": "wrangler deploy"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.800.0",
@@ -21,6 +24,7 @@
     "@tauri-apps/cli": "^2.11.5",
     "esbuild": "^0.25.9",
     "postject": "^1.0.0-alpha.6",
-    "rcedit": "^4.0.1"
+    "rcedit": "^4.0.1",
+    "wrangler": "^4.18.0"
   }
 }

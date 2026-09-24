@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "s3-browser",
+  "main": "./cloudflare/worker.mjs",
+  "compatibility_date": "2025-09-24",
+  "assets": {
+    "directory": "./",
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "S3_BROWSER_BUCKET": "064592191516-audio",
+    "ALLOWED_BUCKETS": "064592191516-audio"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

@@ -23,11 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 
-# amplify
-.amplify
-amplify_outputs*
-amplifyconfiguration*
-
 .freebuff/
 
 # s3-browser runtime queue persistence
@@ -36,6 +31,7 @@ s3-browser/.data/
 # s3-browser SEA build staging
 s3-browser/.sea-build/
 
-# tauri build artifacts
+# s3-browser tauri build artifacts
 s3-browser/src-tauri/target/
 s3-browser/src-tauri/bin/*.exe
+s3-browser/tauri-dist/

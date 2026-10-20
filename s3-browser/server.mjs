@@ -56,10 +56,25 @@ function openBrowser(url) {
   child.unref();
 }
 
-const s3 = new S3Client({
-  region: "us-east-1",
-  credentials: fromIni({ profile: "personal" }),
-});
+function resolveS3ClientConfig() {
+  const config = { region: process.env.AWS_REGION || "us-east-1" };
+
+  if (process.env.S3_ENDPOINT) {
+    config.endpoint = process.env.S3_ENDPOINT;
+    config.forcePathStyle = true;
+  }
+
+  if (process.env.AWS_PROFILE) {
+    config.credentials = fromIni({ profile: process.env.AWS_PROFILE });
+  } else if (!process.env.KUBERNETES_SERVICE_HOST && !process.env.AWS_ACCESS_KEY_ID) {
+    // Local desktop fallback keeps the previous hardcoded profile behavior.
+    config.credentials = fromIni({ profile: "personal" });
+  }
+
+  return config;
+}
+
+const s3 = new S3Client(resolveS3ClientConfig());
 const s3ops = new AwsS3Ops(s3);
 const operationStore = new OperationStore(resolveStateFilePath());
 const operationWorker = new OperationsWorker({ store: operationStore, s3ops });

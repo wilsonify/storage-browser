@@ -1,0 +1,20 @@
+S3 Browser has been deployed.
+
+1. Access the app with a port-forward:
+
+   kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "s3-browser.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+
+2. Open http://127.0.0.1:{{ .Values.service.port }} in your browser.
+
+{{- if and (not .Values.aws.existingSecret) (not .Values.aws.accessKeyId) }}
+
+WARNING: no AWS credentials were provided (aws.accessKeyId is empty and
+aws.existingSecret is not set). Set them before use:
+
+   helm upgrade {{ .Release.Name }} . \
+     --set aws.accessKeyId=AKIA... \
+     --set aws.secretAccessKey=...
+
+or create your own Secret and reference it with --set aws.existingSecret=my-secret
+(keys must be AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY).
+{{- end }}

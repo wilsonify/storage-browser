@@ -1,78 +1,88 @@
-# Amplify Storage Browser React+Vite Starter Template
+# S3 Browser
 
-This repository provides a starter template for creating applications with Storage Browser for S3 using React+Vite and AWS Amplify, emphasizing easy setup for authentication and S3 capabilities.
-
-## Overview
-
-This template equips you with a foundational React application integrated with AWS Amplify Auth and Storage Browser, streamlined for scalability and performance. It is ideal for developers looking to jumpstart their Storage Browser project with pre-configured AWS services like Cognito and S3.
+A native HTML S3 file browser with a small local Node backend. No frontend
+framework, no bundler, no transpiler — the UI is a single `index.html` with
+vanilla HTML, CSS, and browser JavaScript.
 
 ## Features
 
-- **Authentication**: Setup with Amazon Cognito for secure user authentication with email login.   
-   - More info on how to setup and configuration option: https://docs.amplify.aws/react/build-a-backend/auth/set-up-auth/
-- **Storage**: Configured with multiple S3 buckets and granular access controls. The sample is configured with
-  - Default storage bucket with public, admin, and private access paths
-  - Secondary storage bucket with separate backup paths.
-  - More info on how to setup : https://docs.amplify.aws/react/build-a-backend/storage/set-up-storage/#building-your-storage-backend
-- **UI Components**: Pre-integrated Amplify UI React components including:
-  - Authenticator for sign-in/sign-up flows
-      - More info : https://ui.docs.amplify.aws/react/connected-components/authenticator
-  - Storage Browser for S3 file management.
-      - More info : https://ui.docs.amplify.aws/react/connected-components/storage/storage-browser
+- Browse buckets and folder prefixes with breadcrumb navigation
+- Object listing with sizes, timestamps, sorting, filtering, and infinite scroll
+- Multi-select with keyboard navigation, context menu, and copy/cut/paste
+- Upload via drag-and-drop, download, rename, and delete with confirmation
+- Background operation queue (copy, move, delete, rename, local folder sync)
+  with progress, retry, and cancel
+- AWS credentials stay server-side (environment variables or the local shared
+  AWS profile) and are never exposed to the browser
 
-## Project Structure
+## Repository layout
 
 ```
-├── amplify/                  # Amplify Gen 2 backend configuration
-│   ├── auth/                 # Authentication configuration
-│   ├── storage/              # S3 storage configuration
-│   └── backend.ts            # Main backend definition
-├── src/
-│   ├── App.tsx               # Main application component
-│   └── main.tsx              # Application entry point
-└── package.json              # Project dependencies
+├── s3-browser/           # The application
+│   ├── index.html        # Single-file vanilla HTML/CSS/JS UI
+│   ├── server.mjs        # Local Node HTTP server + REST API
+│   ├── s3-ops.mjs        # S3 operations layer (AWS SDK v3)
+│   ├── operations-*.mjs  # Persistent background operation queue
+│   ├── cloudflare/       # Cloudflare Workers deployment variant
+│   ├── src-tauri/        # Tauri desktop shell
+│   └── test/             # node:test suites
+├── helm/                 # Helm chart for deploying to a local k3s cluster
+└── Dockerfile            # Container image for the Node backend
 ```
 
-## Getting Started
+See [s3-browser/README.md](s3-browser/README.md) for local development, the
+Windows single-file distribution, and the Cloudflare Workers variant.
 
-### Installation
+## Run locally
 
-1. Clone this repository
-   ```bash
-   git clone <repository-url>
-   cd sample-amplify-storage-browser
-   ```
+```bash
+cd s3-browser
+npm install
+npm start                 # http://127.0.0.1:3737
+```
 
-2. Install dependencies
-   ```bash
-   npm install
-   ```
+Credentials default to the local shared AWS profile `personal`. Override with
+`AWS_PROFILE`, standard AWS environment variables, or `AWS_REGION` /
+`S3_ENDPOINT` (for S3-compatible stores such as MinIO).
 
-3. Initialize and deploy the Amplify backend
-   ```bash
-   npx ampx sandbox
-   ```
+## Deploy to k3s with Helm
 
-4. Start the development server
-   ```bash
-   npm run dev
-   ```
+Build the image and load it into k3s:
 
-## Deploying to AWS
+```bash
+docker build -t s3-browser:latest .
+k3s ctr images import -   # pipe the image in, or use nerdctl/ctr as appropriate
+# e.g.: docker save s3-browser:latest | k3s ctr images import -
+```
 
-For detailed instructions on deploying your application, refer to the [deployment section](https://docs.amplify.aws/react/start/quickstart/#deploy-a-fullstack-app-to-aws) of our documentation.
+Install the chart:
 
-## Contributing
+```bash
+helm upgrade --install s3-browser ./helm \
+  --set aws.accessKeyId=AKIA... \
+  --set aws.secretAccessKey=... \
+  --set aws.region=us-east-1
+```
 
-See [CONTRIBUTING](CONTRIBUTING.md) for more information.
+Then open the app:
 
-## Security
+```bash
+kubectl port-forward svc/s3-browser-s3-browser 3737:3737
+# http://127.0.0.1:3737
+```
 
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+Useful values (see [helm/values.yaml](helm/values.yaml)):
 
-## License
+| Value | Purpose |
+| --- | --- |
+| `aws.existingSecret` | Reuse a pre-created Secret (keys `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) |
+| `aws.endpoint` | Point at an S3-compatible endpoint such as MinIO |
+| `persistence.enabled` | Persist the operation queue on a PVC (default `true`) |
+| `persistence.size` | PVC size (default `1Gi`) |
 
-This library is licensed under the MIT-0 License. See the LICENSE file.
+## Security notes
 
-
-_These sample applications are provided as a reference to help get started easily and are not supported by AWS Support._
+- The backend never ships AWS credentials to the browser; the UI only talks to
+  the local REST API.
+- The Helm chart mounts credentials from a Kubernetes Secret and runs the
+  container as a non-root user (`uid 1000`).

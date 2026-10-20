@@ -1,0 +1,27 @@
+replicaCount: 1
+
+image:
+  repository: s3-browser
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 3737
+
+aws:
+  # Credentials written into the chart-managed Secret when existingSecret is empty.
+  # Leave empty and set existingSecret to reuse a Secret you created yourself.
+  accessKeyId: ""
+  secretAccessKey: ""
+  region: us-east-1
+  # Optional S3-compatible endpoint, e.g. http://minio.minio.svc:9000
+  endpoint: ""
+  existingSecret: ""
+
+persistence:
+  # Persists the background operation queue across pod restarts.
+  enabled: true
+  size: 1Gi
+  # Empty uses the cluster default StorageClass (local-path on k3s).
+  storageClass: ""

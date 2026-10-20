@@ -1,6 +1,16 @@
 # S3 Browser
 
-A minimal local S3 file browser.
+An S3 file-management application with a local Node backend and a Cloudflare
+Worker variant. These backends do **not** share all exposure, upload, or queue
+durability guarantees.
+
+**User/operator projection:** the workflows and trust boundaries below.
+**Developer/automation reference:** [package commands](package.json),
+[local request handling](server.mjs), [operation store](operations-store.mjs),
+[operation worker](operations-worker.mjs), and [Worker handling](cloudflare/worker.mjs)
+own the interfaces and behavior. Discover scripts with `npm run`; run `npm test`
+for the assertions maintained with the implementation, not proof of live AWS
+permissions or deployment security.
 
 ## Start
 
@@ -65,8 +75,8 @@ The same frontend can also be served from a Cloudflare Worker while keeping the 
 ```bash
 cd s3-browser
 npm install
-cp .dev.vars.example .dev.vars
-# edit .dev.vars with your AWS keys and bucket
+# Create an uncommitted .dev.vars with settings required by the adapter.
+# There is no .dev.vars.example in this checkout; inspect cloudflare/s3-adapter.mjs.
 npx wrangler dev --local
 ```
 
@@ -86,11 +96,16 @@ npx wrangler secret put AWS_SECRET_ACCESS_KEY
 npx wrangler secret put AWS_REGION
 ```
 
-Recommended values:
+Review [Worker configuration](wrangler.jsonc) and
+[adapter configuration handling](cloudflare/s3-adapter.mjs) for the declared settings. Replace account-specific sample buckets with resources
+you intend to expose; do not treat the checked-in values as general recommendations.
 
-- `AWS_REGION=us-east-1`
-- `S3_BROWSER_BUCKET=064592191516-audio`
-- `ALLOWED_BUCKETS=064592191516-audio`
+**Before deployment:** the Worker entry point does not authenticate callers.
+Establish and verify an external access-control boundary and least-privilege AWS
+permissions before exposing it. CORS and a bucket allow-list are not user
+authentication. Worker operations are held in module-local memory, unlike the
+local backend's file-backed store; do not assume queued work or history survives
+Worker restarts or is shared across isolates.
 
 The default bucket is configurable and is not hard-coded inside the UI. The Worker validates bucket and key names to prevent traversal and rejects requests outside the configured allow-list.
 
@@ -102,8 +117,10 @@ The default bucket is configurable and is not hard-coded inside the UI. The Work
 - Sort by name/size/date
 - Filter/search within current view
 - Open/download files in a new tab
-- Queue asynchronous move/copy/delete/rename operations with persisted state
-- Move files and folders safely via copy-then-delete
+- Queue asynchronous move/copy/delete/rename operations (local state is file-backed;
+  Worker state has a different lifetime)
+- Move files and folders via copy-then-delete; review errors and partial results
+  rather than assuming a move is atomic
 - Drag/drop, right-click context menu, multi-select, and Explorer-like keyboard shortcuts
 - Back / Forward / Up / Refresh navigation
 - Operations panel with queued/running/completed/failed states and retry
@@ -112,10 +129,25 @@ The default bucket is configurable and is not hard-coded inside the UI. The Work
 
 ## What it does NOT do
 
-- Upload new objects from local files
 - Expose AWS credentials to the browser
-- Require authentication (localhost only)
+- Provide caller authentication in the inspected Node/Worker entry points
+
+## Upload and operation boundaries
+
+The [local server](server.mjs) accepts local-file transfer operations, and the
+[Worker](cloudflare/worker.mjs) has an upload handler. Consult the active backend
+and UI rather than treating upload capabilities as identical across variants.
+Queued acceptance is not completion: inspect operation results and errors before
+assuming a copy, move, delete, or transfer succeeded. Persistence is owned by each
+backend; a shared frontend does not establish shared recovery semantics.
 
 ## Security
 
-AWS credentials stay in `~/.aws/credentials` and are read by the Node server using the AWS SDK's `fromIni()` credential provider. The browser never sees keys, tokens, or the credentials file.
+The local server uses the AWS SDK's profile credential provider; credential
+selection is owned by [server.mjs](server.mjs), not a second settings list here.
+The browser receives operation results rather than the credential configuration.
+The local bind address defaults to loopback but is configurable: keep it restricted
+unless you have supplied and verified an appropriate access-control boundary.
+The service can perform mutations using its AWS permissions; hiding credentials
+from the browser does not authorize callers. See the Worker warning above before
+using a remotely accessible deployment.

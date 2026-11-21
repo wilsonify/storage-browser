@@ -9,6 +9,35 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 
+// Workers Free allows 50 subrequests per invocation. Operations keep a lower
+// ceiling so pagination and retries never push a request over the platform limit.
+export const MAX_SUBREQUESTS_PER_INVOCATION = 30;
+export const DELETE_BATCH_SIZE = 100;
+
+export class BudgetExhaustedError extends Error {
+  constructor() {
+    super("Subrequest budget exhausted");
+    this.name = "BudgetExhaustedError";
+  }
+}
+
+export class SubrequestBudget {
+  constructor(limit = MAX_SUBREQUESTS_PER_INVOCATION) {
+    this.limit = limit;
+    this.used = 0;
+  }
+
+  get remaining() {
+    return Math.max(0, this.limit - this.used);
+  }
+
+  take(count = 1) {
+    if (this.used + count > this.limit) return false;
+    this.used += count;
+    return true;
+  }
+}
+
 export function validateBucketName(value) {
   if (typeof value !== "string") {
     throw new Error("Invalid bucket: bucket must be a string");
@@ -97,11 +126,31 @@ export function getS3Client(env) {
 }
 
 export class AwsS3WorkerAdapter {
-  constructor(env) {
-    this.client = getS3Client(env);
+  constructor(env, options = {}) {
+    this.client = options.client || getS3Client(env);
     this.region = env.AWS_REGION || "us-east-1";
     this.defaultBucket = getDefaultBucket(env);
     this.allowedBuckets = parseAllowedBuckets(env.ALLOWED_BUCKETS || env.ALLOWED_BUCKETS_LIST || env.S3_ALLOWED_BUCKETS);
+    this.budget = null;
+  }
+
+  // Each invocation installs a fresh budget; every S3 call spends from it and
+  // throws BudgetExhaustedError before issuing a request it cannot afford.
+  withBudget(budget) {
+    this.budget = budget;
+    return this;
+  }
+
+  clearBudget() {
+    this.budget = null;
+    return this;
+  }
+
+  async send(command, cost = 1) {
+    if (this.budget && !this.budget.take(cost)) {
+      throw new BudgetExhaustedError();
+    }
+    return this.client.send(command);
   }
 
   resolveBucket(bucket) {
@@ -119,18 +168,24 @@ export class AwsS3WorkerAdapter {
   }
 
   async listBuckets() {
-    const resp = await this.client.send(new ListBucketsCommand({}));
-    return (resp.Buckets || []).map((bucket) => ({
+    const resp = await this.send(new ListBucketsCommand({}));
+    const buckets = (resp.Buckets || []).map((bucket) => ({
       name: bucket.Name,
       created: bucket.CreationDate ? bucket.CreationDate.toISOString() : null,
     }));
+
+    // Never advertise buckets this deployment would refuse to open.
+    if (this.allowedBuckets) {
+      return buckets.filter((bucket) => this.allowedBuckets.includes(bucket.name));
+    }
+    return buckets;
   }
 
   async listObjects({ bucket, prefix = "", continuationToken, delimiter = "/", maxKeys = 1000 }) {
     const safeBucket = this.resolveBucket(bucket);
     const safePrefix = sanitizePrefix(prefix || "");
 
-    const resp = await this.client.send(new ListObjectsV2Command({
+    const resp = await this.send(new ListObjectsV2Command({
       Bucket: safeBucket,
       Prefix: safePrefix,
       Delimiter: delimiter,
@@ -160,12 +215,30 @@ export class AwsS3WorkerAdapter {
     };
   }
 
+  // One page per call so a folder of any size can be enumerated across batches.
+  async listAllKeys({ bucket, prefix = "", continuationToken }) {
+    const safeBucket = this.resolveBucket(bucket);
+    const safePrefix = sanitizePrefix(prefix || "");
+
+    const resp = await this.send(new ListObjectsV2Command({
+      Bucket: safeBucket,
+      Prefix: safePrefix,
+      ContinuationToken: continuationToken || undefined,
+      MaxKeys: 1000,
+    }));
+
+    return {
+      keys: (resp.Contents || []).map((obj) => obj.Key).filter(Boolean),
+      nextToken: resp.IsTruncated ? resp.NextContinuationToken || null : null,
+    };
+  }
+
   async getDownloadStream(bucket, key) {
     const safeBucket = this.resolveBucket(bucket);
     const safeKey = validateObjectKey(key);
 
-    const head = await this.client.send(new HeadObjectCommand({ Bucket: safeBucket, Key: safeKey }));
-    const bodyResponse = await this.client.send(new GetObjectCommand({ Bucket: safeBucket, Key: safeKey }));
+    const head = await this.send(new HeadObjectCommand({ Bucket: safeBucket, Key: safeKey }));
+    const bodyResponse = await this.send(new GetObjectCommand({ Bucket: safeBucket, Key: safeKey }));
 
     return {
       bucket: safeBucket,
@@ -175,128 +248,68 @@ export class AwsS3WorkerAdapter {
     };
   }
 
-  async copyObject(bucket, sourceKey, destinationKey) {
+  async headObject(bucket, key) {
+    const safeBucket = this.resolveBucket(bucket);
+    const safeKey = validateObjectKey(key);
+
+    try {
+      const head = await this.send(new HeadObjectCommand({ Bucket: safeBucket, Key: safeKey }));
+      return { exists: true, size: head.ContentLength ?? null, contentType: head.ContentType || null };
+    } catch (error) {
+      const status = error?.$metadata?.httpStatusCode;
+      if (status === 404 || error?.name === "NotFound" || error?.name === "NoSuchKey") {
+        return { exists: false, size: null, contentType: null };
+      }
+      throw error;
+    }
+  }
+
+  async copyKey(bucket, sourceKey, destinationKey) {
     const safeBucket = this.resolveBucket(bucket);
     const safeSourceKey = validateObjectKey(sourceKey);
     const safeDestinationKey = validateObjectKey(destinationKey);
 
-    return this.client.send(new CopyObjectCommand({
+    return this.send(new CopyObjectCommand({
       Bucket: safeBucket,
       CopySource: `${safeBucket}/${encodeURIComponent(safeSourceKey)}`,
       Key: safeDestinationKey,
     }));
   }
 
-  async deleteKeys(bucket, keys) {
+  // DeleteObjects accepts up to 1000 keys per request; batches keep the
+  // per-invocation subrequest cost proportional to pages, not objects.
+  async deleteKeysBatch(bucket, keys) {
     const safeBucket = this.resolveBucket(bucket);
-    const safeKeys = Array.from(new Set(keys.filter(Boolean).map((key) => validateObjectKey(key))));
+    const safeKeys = Array.from(new Set((keys || []).filter(Boolean).map((key) => validateObjectKey(key))));
 
-    if (!safeKeys.length) return { deleted: 0 };
+    if (!safeKeys.length) return { deleted: [], errors: [] };
 
-    const batches = [];
-    for (let index = 0; index < safeKeys.length; index += 1000) {
-      batches.push(safeKeys.slice(index, index + 1000));
-    }
+    const deleted = [];
+    const errors = [];
 
-    let deleted = 0;
-    for (const batch of batches) {
-      const resp = await this.client.send(new DeleteObjectsCommand({
+    for (let index = 0; index < safeKeys.length; index += DELETE_BATCH_SIZE) {
+      const batch = safeKeys.slice(index, index + DELETE_BATCH_SIZE);
+      const resp = await this.send(new DeleteObjectsCommand({
         Bucket: safeBucket,
-        Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
+        Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: false },
       }));
-      deleted += (resp.Deleted || []).length;
-    }
 
-    return { deleted };
-  }
-
-  async renameTarget({ bucket, source, newName }) {
-    const safeBucket = this.resolveBucket(bucket);
-    const safeSource = validateObjectKey(source);
-    const safeNewName = validateObjectKey(newName);
-
-    const parent = safeSource.includes("/") ? safeSource.slice(0, safeSource.lastIndexOf("/") + 1) : "";
-    const destinationKey = `${parent}${safeNewName.split("/").pop()}`;
-
-    await this.copyObject(safeBucket, safeSource, destinationKey);
-    await this.deleteKeys(safeBucket, [safeSource]);
-
-    return { renamed: 1, source: safeSource, destination: destinationKey };
-  }
-
-  async moveTargets({ bucket, sources, destination, onProgress, shouldCancel }) {
-    const safeBucket = this.resolveBucket(bucket);
-    const safeSources = [...new Set((sources || []).map((source) => validateObjectKey(source)))];
-    const safeDestination = sanitizePrefix(destination || "");
-
-    let completed = 0;
-    for (const source of safeSources) {
-      if (typeof shouldCancel === "function" && shouldCancel()) {
-        throw Object.assign(new Error("Operation cancelled"), { name: "OperationCancelledError" });
+      for (const item of resp.Deleted || []) {
+        if (item.Key) deleted.push(item.Key);
       }
-
-      const fileName = source.split("/").pop() || "";
-      const destKey = safeDestination ? `${safeDestination}${fileName}` : fileName;
-
-      await this.copyObject(safeBucket, source, destKey);
-      await this.deleteKeys(safeBucket, [source]);
-      completed += 1;
-      if (typeof onProgress === "function") {
-        onProgress({ total: safeSources.length, completed, message: `Moving ${fileName}` });
+      for (const item of resp.Errors || []) {
+        errors.push({ key: item.Key, message: item.Message || item.Code || "Delete failed" });
       }
     }
 
-    return { moved: completed };
-  }
-
-  async copyTargets({ bucket, sources, destination, onProgress, shouldCancel }) {
-    const safeBucket = this.resolveBucket(bucket);
-    const safeSources = [...new Set((sources || []).map((source) => validateObjectKey(source)))];
-    const safeDestination = sanitizePrefix(destination || "");
-
-    let completed = 0;
-    for (const source of safeSources) {
-      if (typeof shouldCancel === "function" && shouldCancel()) {
-        throw Object.assign(new Error("Operation cancelled"), { name: "OperationCancelledError" });
-      }
-
-      const fileName = source.split("/").pop() || "";
-      const destKey = safeDestination ? `${safeDestination}${fileName}` : fileName;
-      await this.copyObject(safeBucket, source, destKey);
-      completed += 1;
-      if (typeof onProgress === "function") {
-        onProgress({ total: safeSources.length, completed, message: `Copying ${fileName}` });
-      }
-    }
-
-    return { copied: completed };
-  }
-
-  async deleteTargets({ bucket, targets, onProgress, shouldCancel }) {
-    const safeBucket = this.resolveBucket(bucket);
-    const safeTargets = [...new Set((targets || []).map((target) => validateObjectKey(target)))];
-
-    let completed = 0;
-    for (const target of safeTargets) {
-      if (typeof shouldCancel === "function" && shouldCancel()) {
-        throw Object.assign(new Error("Operation cancelled"), { name: "OperationCancelledError" });
-      }
-
-      await this.deleteKeys(safeBucket, [target]);
-      completed += 1;
-      if (typeof onProgress === "function") {
-        onProgress({ total: safeTargets.length, completed, message: `Deleting ${target}` });
-      }
-    }
-
-    return { deleted: completed };
+    return { deleted, errors };
   }
 
   async uploadObject({ bucket, key, body, contentType }) {
     const safeBucket = this.resolveBucket(bucket);
     const safeKey = validateObjectKey(key);
 
-    await this.client.send(new PutObjectCommand({
+    await this.send(new PutObjectCommand({
       Bucket: safeBucket,
       Key: safeKey,
       Body: body,

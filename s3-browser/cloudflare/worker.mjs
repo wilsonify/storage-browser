@@ -1,9 +1,19 @@
-import { AwsS3WorkerAdapter } from "./s3-adapter.mjs";
+import {
+  AwsS3WorkerAdapter,
+  BudgetExhaustedError,
+  MAX_SUBREQUESTS_PER_INVOCATION,
+  SubrequestBudget,
+} from "./s3-adapter.mjs";
 import { authenticate } from "./auth.mjs";
 
 const operationMap = new Map();
-const queuedOperations = [];
-let queueProcessorRunning = false;
+const TERMINAL_STATUSES = new Set(["completed", "completed_with_errors", "failed", "cancelled"]);
+
+// Hard ceiling for one operation. The real limit is the per-invocation
+// subrequest budget; this only stops a single prefix from growing unbounded.
+const MAX_PLAN_KEYS = 5000;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_RETAINED_OPERATIONS = 50;
 
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
@@ -39,7 +49,7 @@ function withCors(request, env, response) {
   const allowedOrigin = resolveAllowedOrigin(request.headers.get("Origin"), env);
   if (allowedOrigin) {
     headers.set("Access-Control-Allow-Origin", allowedOrigin);
-    headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
     headers.set("Access-Control-Allow-Headers", "Content-Type");
     headers.set("Access-Control-Allow-Credentials", "true");
   }
@@ -60,7 +70,7 @@ function preflight(request, env) {
   const allowedOrigin = resolveAllowedOrigin(request.headers.get("Origin"), env);
   if (allowedOrigin) {
     headers.set("Access-Control-Allow-Origin", allowedOrigin);
-    headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
     headers.set("Access-Control-Allow-Headers", "Content-Type");
     headers.set("Access-Control-Max-Age", "600");
   }
@@ -105,8 +115,14 @@ function errorResponse(error) {
   if (/^Bucket .* is not allowed/.test(message)) {
     return json({ error: message }, 400);
   }
+  if (/^Invalid operation|^Operation exceeds|^Destination /.test(message)) {
+    return json({ error: message }, 400);
+  }
   if (/^Missing AWS credentials/.test(message)) {
     return json({ error: "Object storage is not configured" }, 503);
+  }
+  if (error?.name === "PayloadTooLargeError") {
+    return json({ error: message }, 413);
   }
 
   // Unknown failures keep an opaque client body, but the logs must identify them:
@@ -125,116 +141,446 @@ async function readJsonBody(request) {
   }
 }
 
-function enqueueOperation(type, payload) {
-  const operation = {
+function isFolderKey(key) {
+  return typeof key === "string" && key.endsWith("/");
+}
+
+function ensureFolderPrefix(value) {
+  const raw = String(value || "").replace(/\\/g, "/");
+  if (!raw) return "";
+  const withoutLeading = raw.replace(/^\/+/, "");
+  return withoutLeading.endsWith("/") ? withoutLeading : `${withoutLeading}/`;
+}
+
+function objectNameFromKey(key) {
+  return key.split("/").pop();
+}
+
+/* ------------------------------------------------------------------ *
+ * Operation planning
+ *
+ * A plan is a flat list of tasks. Building it may page through folder
+ * prefixes; executing it spends at most one subrequest budget per advance()
+ * call. Both phases resume from stored state, so no invocation is asked to
+ * finish an arbitrarily large operation.
+ * ------------------------------------------------------------------ */
+
+function pushTask(op, task) {
+  op.plan.push(task);
+  if (op.plan.length > MAX_PLAN_KEYS) {
+    throw new Error(`Operation exceeds ${MAX_PLAN_KEYS} objects; split it into smaller operations.`);
+  }
+}
+
+function taskForKey(kind, key, { sourcePrefix, destinationPrefix, newName } = {}) {
+  if (kind === "delete") return { kind: "delete", key };
+
+  if (kind === "rename") {
+    const parent = key.includes("/") ? key.slice(0, key.lastIndexOf("/") + 1) : "";
+    const target = isFolderKey(key) ? `${parent}${newName}/` : `${parent}${newName}`;
+    return { kind: "move", sourceKey: key, destKey: target, copied: false };
+  }
+
+  // Children keep their path relative to the source prefix, so a copied or moved
+  // tree is reproduced instead of flattened into the destination.
+  const relative = sourcePrefix && key.startsWith(sourcePrefix) ? key.slice(sourcePrefix.length) : objectNameFromKey(key);
+  return {
+    kind: kind === "move" ? "move" : "copy",
+    sourceKey: key,
+    destKey: `${destinationPrefix}${relative}`,
+    copied: false,
+  };
+}
+
+async function buildPlan(op, adapter) {
+  while (true) {
+    if (!op.listing) {
+      const next = op.expandQueue.shift();
+      if (!next) {
+        op.planComplete = true;
+        return;
+      }
+      if (next.kind === "key") {
+        pushTask(op, next.task);
+        continue;
+      }
+      op.listing = { prefix: next.prefix, token: null, descriptor: next.descriptor };
+    }
+
+    const previousToken = op.listing.token;
+    const page = await adapter.listAllKeys({
+      bucket: op.bucket,
+      prefix: op.listing.prefix,
+      continuationToken: op.listing.token,
+    });
+
+    const descriptor = op.listing.descriptor;
+    for (const key of page.keys) {
+      if (descriptor.skipKey && descriptor.skipKey(key)) continue;
+      pushTask(op, taskForKey(descriptor.kind, key, descriptor));
+    }
+
+    op.listing.token = page.nextToken;
+    if (op.listing.token && op.listing.token === previousToken) {
+      throw new Error("Storage listing did not advance; retry the operation.");
+    }
+    if (!op.listing.token) op.listing = null;
+  }
+}
+
+function collectDeleteGroup(op) {
+  const group = [];
+  let index = op.cursor;
+  while (index < op.plan.length && op.plan[index].kind === "delete" && group.length < 100) {
+    group.push(op.plan[index]);
+    index += 1;
+  }
+  return group;
+}
+
+async function runBatch(op, adapter) {
+  await buildPlan(op, adapter);
+
+  while (op.cursor < op.plan.length) {
+    if (op.cancelRequested) return;
+
+    const task = op.plan[op.cursor];
+
+    if (task.kind === "delete") {
+      const group = collectDeleteGroup(op);
+      const response = await adapter.deleteKeysBatch(op.bucket, group.map((item) => item.key));
+      const errors = new Map((response.errors || []).map((item) => [item.key, item.message]));
+
+      for (const item of group) {
+        if (errors.has(item.key)) {
+          op.failed.push({ key: item.key, message: errors.get(item.key), stage: "delete", task: { kind: "delete", key: item.key } });
+        } else {
+          op.deleted += 1;
+          op.completed += 1;
+        }
+      }
+      op.cursor += group.length;
+      continue;
+    }
+
+    if (task.kind === "copy") {
+      await adapter.copyKey(op.bucket, task.sourceKey, task.destKey);
+      op.copied += 1;
+      op.completed += 1;
+      op.cursor += 1;
+      continue;
+    }
+
+    // move: copy and delete are accounted separately so a failed delete can
+    // never be reported as a clean move.
+    if (!task.copied) {
+      await adapter.copyKey(op.bucket, task.sourceKey, task.destKey);
+      task.copied = true;
+      op.copied += 1;
+    }
+
+    const response = await adapter.deleteKeysBatch(op.bucket, [task.sourceKey]);
+    const deleteError = (response.errors || []).find((item) => item.key === task.sourceKey);
+    if (deleteError) {
+      op.failed.push({
+        key: task.sourceKey,
+        message: deleteError.message,
+        stage: "delete",
+        copiedTo: task.destKey,
+        task: { kind: "delete", key: task.sourceKey },
+      });
+    } else {
+      op.deleted += 1;
+      op.completed += 1;
+    }
+    op.cursor += 1;
+  }
+}
+
+function remainingKeys(op) {
+  return op.plan.slice(op.cursor).map((task) => task.sourceKey || task.key).slice(0, 200);
+}
+
+function hasRemaining(op) {
+  return op.cursor < op.plan.length || !op.planComplete;
+}
+
+function refreshResult(op) {
+  op.updatedAt = new Date().toISOString();
+  const total = op.planComplete ? op.plan.length : null;
+  op.progress = {
+    total,
+    completed: op.completed,
+    failed: op.failed.length,
+    message: op.status === "cancelling" ? "Cancelling" : op.paused ? "Paused (continues on next poll)" : "Working",
+  };
+  op.result = {
+    status: op.status,
+    total,
+    completed: op.completed,
+    copied: op.copied,
+    deleted: op.deleted,
+    failed: op.failed,
+    skipped: op.skipped,
+    // The key list is capped for response size; the count stays exact so a
+    // paused or cancelled run cannot look finished.
+    remaining: remainingKeys(op),
+    remainingCount: op.planComplete ? Math.max(0, op.plan.length - op.cursor) : null,
+    deleteFailed: op.failed.filter((item) => item.stage === "delete").map((item) => item.key),
+    cancellationRequested: op.cancelRequested,
+  };
+}
+
+function finalize(op) {
+  if (op.cancelRequested) {
+    op.status = "cancelled";
+  } else if (op.failed.length && op.completed > 0) {
+    op.status = "completed_with_errors";
+  } else if (op.failed.length) {
+    op.status = "failed";
+  } else {
+    op.status = "completed";
+  }
+  op.finishedAt = new Date().toISOString();
+  op.paused = false;
+  refreshResult(op);
+}
+
+async function advanceOperation(op, adapter) {
+  if (op.batchInFlight) return { advanced: false, reason: "batch-in-flight" };
+  if (TERMINAL_STATUSES.has(op.status)) return { advanced: false, reason: "finished" };
+
+  if (op.cancelRequested) {
+    finalize(op);
+    return { advanced: false, reason: "cancelled" };
+  }
+
+  op.batchInFlight = true;
+  op.paused = false;
+  op.status = "running";
+  op.startedAt = op.startedAt || new Date().toISOString();
+
+  const budget = new SubrequestBudget(MAX_SUBREQUESTS_PER_INVOCATION);
+  adapter.withBudget(budget);
+
+  try {
+    await runBatch(op, adapter);
+  } catch (error) {
+    if (error instanceof BudgetExhaustedError) {
+      op.paused = true;
+    } else {
+      op.failure = describeFailure(error);
+      console.error("s3-browser operation failed:", JSON.stringify(op.failure));
+      // Client-facing text stays short and never carries signature scopes.
+      op.error = error instanceof Error
+        ? `${error.name}: ${String(error.message).slice(0, 200)}`.replace(/Credential=[^,\s]+/g, "Credential=<redacted>")
+        : "Operation failed";
+      op.status = "failed";
+      op.finishedAt = new Date().toISOString();
+      op.paused = false;
+      adapter.clearBudget();
+      op.batchInFlight = false;
+      refreshResult(op);
+      return { advanced: false, reason: "error", error: op.failure };
+    }
+  } finally {
+    adapter.clearBudget();
+    op.batchInFlight = false;
+  }
+
+  if (op.cancelRequested) {
+    finalize(op);
+  } else if (!hasRemaining(op)) {
+    finalize(op);
+  } else {
+    op.status = "running";
+    op.paused = true;
+    refreshResult(op);
+  }
+
+  return { advanced: true, status: op.status };
+}
+
+/* ------------------------------------------------------------------ *
+ * Operation records
+ * ------------------------------------------------------------------ */
+
+function trimOperations() {
+  if (operationMap.size <= MAX_RETAINED_OPERATIONS) return;
+  const finished = [...operationMap.values()]
+    .filter((op) => TERMINAL_STATUSES.has(op.status))
+    .sort((a, b) => new Date(a.updatedAt) - new Date(b.updatedAt));
+  while (operationMap.size > MAX_RETAINED_OPERATIONS && finished.length) {
+    operationMap.delete(finished.shift().id);
+  }
+}
+
+function createOperation({ type, payload, bucket, expandQueue, plan = [], planComplete = false, retryOf = null }) {
+  const op = {
     id: crypto.randomUUID(),
     type,
     payload,
+    bucket,
     status: "queued",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    progress: { total: 0, completed: 0, message: "Queued" },
+    startedAt: null,
+    finishedAt: null,
+    expandQueue,
+    listing: null,
+    plan,
+    planComplete,
+    cursor: 0,
+    copied: 0,
+    deleted: 0,
+    completed: 0,
+    failed: [],
+    skipped: [],
     cancelRequested: false,
+    batchInFlight: false,
+    paused: false,
+    retryOf,
+    progress: { total: planComplete ? plan.length : null, completed: 0, failed: 0, message: "Queued" },
+    result: null,
   };
-
-  operationMap.set(operation.id, operation);
-  queuedOperations.push(operation.id);
-  return operation;
+  operationMap.set(op.id, op);
+  trimOperations();
+  return op;
 }
 
-function getOperation(id) {
-  return operationMap.get(id) || null;
+function summarizeOperation(op) {
+  return {
+    id: op.id,
+    type: op.type,
+    status: op.status,
+    createdAt: op.createdAt,
+    updatedAt: op.updatedAt,
+    startedAt: op.startedAt,
+    finishedAt: op.finishedAt,
+    progress: op.progress,
+    result: op.result,
+    error: op.error,
+    failure: op.failure,
+    retryOf: op.retryOf,
+    payload: op.payload,
+  };
 }
 
 function listOperations() {
-  return [...operationMap.values()].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  return [...operationMap.values()]
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .slice(0, MAX_RETAINED_OPERATIONS)
+    .map(summarizeOperation);
 }
 
-async function processOperationQueue(env, createAdapter) {
-  if (queueProcessorRunning) return;
-  queueProcessorRunning = true;
+/* ------------------------------------------------------------------ *
+ * Request validation
+ * ------------------------------------------------------------------ */
 
-  try {
-    while (queuedOperations.length > 0) {
-      const id = queuedOperations.shift();
-      const op = operationMap.get(id);
-      if (!op || op.status === "cancelled") continue;
-
-      op.status = "running";
-      op.updatedAt = new Date().toISOString();
-      op.progress = { total: 0, completed: 0, message: "Starting" };
-
-      const adapter = createAdapter(env);
-      const onProgress = (progress) => {
-        op.progress = {
-          ...op.progress,
-          ...progress,
-        };
-        op.updatedAt = new Date().toISOString();
-      };
-
-      const shouldCancel = () => op.cancelRequested === true;
-
-      try {
-        let result;
-        if (op.type === "move") {
-          result = await adapter.moveTargets({
-            bucket: op.payload.bucket,
-            sources: op.payload.sources,
-            destination: op.payload.destination,
-            onProgress,
-            shouldCancel,
-          });
-        } else if (op.type === "copy") {
-          result = await adapter.copyTargets({
-            bucket: op.payload.bucket,
-            sources: op.payload.sources,
-            destination: op.payload.destination,
-            onProgress,
-            shouldCancel,
-          });
-        } else if (op.type === "delete") {
-          result = await adapter.deleteTargets({
-            bucket: op.payload.bucket,
-            targets: op.payload.targets,
-            onProgress,
-            shouldCancel,
-          });
-        } else if (op.type === "rename") {
-          result = await adapter.renameTarget({
-            bucket: op.payload.bucket,
-            source: op.payload.source,
-            newName: op.payload.newName,
-            onProgress,
-            shouldCancel,
-          });
-        } else {
-          throw new Error(`Unsupported operation type: ${op.type}`);
-        }
-
-        op.status = "completed";
-        op.result = result;
-        op.progress = {
-          total: 1,
-          completed: 1,
-          message: op.type === "delete" ? "Finished" : "Complete",
-        };
-      } catch (error) {
-        op.status = error?.name === "OperationCancelledError" ? "cancelled" : "failed";
-        op.error = error instanceof Error ? error.message : String(error);
-        op.progress = {
-          total: 1,
-          completed: 0,
-          message: op.status === "cancelled" ? "Cancelled" : "Failed",
-        };
-      }
-
-      op.updatedAt = new Date().toISOString();
-    }
-  } finally {
-    queueProcessorRunning = false;
+function assertNotInsideSource(sourcePrefix, destinationPrefix) {
+  if (destinationPrefix.startsWith(sourcePrefix)) {
+    throw new Error("Destination is inside the source folder.");
   }
 }
+
+function buildExpandQueue(type, payload) {
+  const bucket = validateBucketForOp(payload.bucket);
+  const normalizeName = (name) => {
+    const raw = String(name || "").trim();
+    if (!raw || raw.includes("/") || raw.includes("\\") || raw.includes("..")) {
+      throw new Error(`Invalid operation: invalid name "${name}"`);
+    }
+    return raw;
+  };
+
+  if (type === "delete") {
+    const targets = Array.isArray(payload.targets) ? payload.targets : [];
+    if (!targets.length) throw new Error("Invalid operation: missing targets");
+    return {
+      bucket,
+      queue: targets.map((target) =>
+        isFolderKey(target)
+          ? { kind: "prefix", prefix: target, descriptor: { kind: "delete" } }
+          : { kind: "key", task: { kind: "delete", key: target } },
+      ),
+    };
+  }
+
+  if (type === "rename") {
+    if (!payload.source || !payload.newName) throw new Error("Invalid operation: missing source or new name");
+    const newName = normalizeName(payload.newName);
+    const source = payload.source;
+    if (isFolderKey(source)) {
+      const parent = source.slice(0, source.lastIndexOf("/", source.length - 2) + 1);
+      const destinationPrefix = `${parent}${newName}/`;
+      assertNotInsideSource(source, destinationPrefix);
+      // Renaming a folder is a prefix rewrite: copy each child, then delete the source.
+      return {
+        bucket,
+        queue: [{
+          kind: "prefix",
+          prefix: source,
+          descriptor: {
+            kind: "move",
+            sourcePrefix: source,
+            destinationPrefix,
+            skipKey: (key) => key === source,
+          },
+        }],
+      };
+    }
+    return {
+      bucket,
+      queue: [{ kind: "key", task: taskForKey("rename", source, { newName }) }],
+    };
+  }
+
+  // copy / move
+  const sources = Array.isArray(payload.sources) ? payload.sources : [];
+  const destination = ensureFolderPrefix(payload.destination || "");
+  if (!sources.length) throw new Error("Invalid operation: missing sources");
+
+  const queue = sources.map((source) => {
+    if (isFolderKey(source)) {
+      // A folder keeps its own name under the destination, like any file manager.
+      const folderName = source.slice(source.lastIndexOf("/", source.length - 2) + 1, source.length - 1);
+      const destinationPrefix = `${destination}${folderName}/`;
+      assertNotInsideSource(source, destinationPrefix);
+      return {
+        kind: "prefix",
+        prefix: source,
+        descriptor: {
+          kind: type === "move" ? "move" : "copy",
+          sourcePrefix: source,
+          destinationPrefix,
+          skipKey: (key) => key === source,
+        },
+      };
+    }
+    return {
+      kind: "key",
+      task: {
+        kind: type === "move" ? "move" : "copy",
+        sourceKey: source,
+        destKey: `${destination}${objectNameFromKey(source)}`,
+        copied: false,
+      },
+    };
+  });
+
+  return { bucket, queue };
+}
+
+function validateBucketForOp(bucket) {
+  if (!bucket || typeof bucket !== "string") {
+    throw new Error("Missing bucket.");
+  }
+  return bucket;
+}
+
+/* ------------------------------------------------------------------ *
+ * HTTP handlers
+ * ------------------------------------------------------------------ */
 
 async function handleApi(request, env, ctx, path, url, createAdapter) {
   let adapter = null;
@@ -294,13 +640,57 @@ async function handleApi(request, env, ctx, path, url, createAdapter) {
     // a web ReadableStream, and the runtime sets the length itself.
     const stream = typeof body?.transformToWebStream === "function" ? body.transformToWebStream() : body;
 
+    // Header values must be byte strings, so non-ASCII names go in the RFC 5987
+    // parameter and the plain filename gets an ASCII fallback.
+    const asciiFileName = fileName.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+    const encodedFileName = encodeURIComponent(fileName).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+
     return new Response(stream, {
       headers: {
         "Content-Type": head.ContentType || contentTypeMap[ext] || "application/octet-stream",
-        "Content-Disposition": `inline; filename="${fileName}"`,
+        "Content-Disposition": `inline; filename="${asciiFileName}"; filename*=UTF-8''${encodedFileName}`,
         "Cache-Control": "private, no-store",
       },
     });
+  }
+
+  // Lets the UI verify the real outcome of an aborted upload instead of
+  // claiming a cancel that may have raced a completed write.
+  if (path === "/api/object" && request.method === "GET") {
+    const bucket = url.searchParams.get("bucket");
+    const key = url.searchParams.get("key");
+    if (!bucket || !key) {
+      return json({ error: "Missing bucket or key" }, 400);
+    }
+    return json(await getAdapter().headObject(bucket, key));
+  }
+
+  if (path === "/api/upload" && request.method === "PUT") {
+    const bucket = url.searchParams.get("bucket");
+    const key = url.searchParams.get("key");
+    if (!bucket || !key) {
+      return json({ error: "Missing bucket or key" }, 400);
+    }
+
+    const declaredLength = Number(request.headers.get("Content-Length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_BYTES) {
+      return json({ error: `File is larger than the ${MAX_UPLOAD_BYTES / (1024 * 1024)} MiB upload limit` }, 413);
+    }
+
+    const body = await request.arrayBuffer();
+    if (body.byteLength > MAX_UPLOAD_BYTES) {
+      return json({ error: `File is larger than the ${MAX_UPLOAD_BYTES / (1024 * 1024)} MiB upload limit` }, 413);
+    }
+
+    const contentType = url.searchParams.get("contentType") || request.headers.get("Content-Type") || "application/octet-stream";
+    const reply = await getAdapter().uploadObject({
+      bucket,
+      key: decodeURIComponent(key),
+      body,
+      contentType,
+    });
+
+    return json(reply, 200);
   }
 
   if (path === "/api/upload" && request.method === "POST") {
@@ -311,6 +701,9 @@ async function handleApi(request, env, ctx, path, url, createAdapter) {
 
     if (!bucket || !key || !(file instanceof File)) {
       return json({ error: "Missing bucket, key, or file upload" }, 400);
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      return json({ error: `File is larger than the ${MAX_UPLOAD_BYTES / (1024 * 1024)} MiB upload limit` }, 413);
     }
 
     const reply = await getAdapter().uploadObject({
@@ -345,11 +738,41 @@ async function handleApi(request, env, ctx, path, url, createAdapter) {
       return json({ error: `Invalid operation type: ${type}` }, 400);
     }
 
-    const operation = enqueueOperation(type, opPayload);
-    if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(processOperationQueue(env, createAdapter));
+    let spec;
+    try {
+      spec = buildExpandQueue(type, opPayload);
+    } catch (error) {
+      return json({ error: error.message }, 400);
     }
-    return json(operation, 202);
+
+    const operation = createOperation({
+      type,
+      payload: opPayload,
+      bucket: spec.bucket,
+      expandQueue: spec.queue,
+    });
+
+    await advanceOperation(operation, getAdapter());
+    return json(summarizeOperation(operation), 202);
+  }
+
+  const operationPathMatch = path.match(/^\/api\/operations\/([^/]+)$/);
+  if (operationPathMatch && request.method === "GET") {
+    const op = operationMap.get(decodeURIComponent(operationPathMatch[1]));
+    if (!op) return json({ error: "Operation not found" }, 404);
+    return json(summarizeOperation(op));
+  }
+
+  const advanceOperationMatch = path.match(/^\/api\/operations\/([^/]+)\/advance$/);
+  if (advanceOperationMatch && request.method === "POST") {
+    const op = operationMap.get(decodeURIComponent(advanceOperationMatch[1]));
+    if (!op) return json({ error: "Operation not found" }, 404);
+    if (op.batchInFlight) {
+      return json({ error: "A batch is already running for this operation", operation: summarizeOperation(op) }, 409);
+    }
+
+    await advanceOperation(op, getAdapter());
+    return json(summarizeOperation(op));
   }
 
   if (path === "/api/move" && request.method === "POST") {
@@ -364,53 +787,72 @@ async function handleApi(request, env, ctx, path, url, createAdapter) {
       return json({ error: "Missing bucket, sources, or destination" }, 400);
     }
 
-    const operation = enqueueOperation("move", {
-      bucket: body.bucket,
-      sources: body.sources,
-      destination: body.destination,
-    });
-    if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(processOperationQueue(env, createAdapter));
+    let spec;
+    try {
+      spec = buildExpandQueue("move", body);
+    } catch (error) {
+      return json({ error: error.message }, 400);
     }
-    return json(operation, 202);
-  }
 
-  const operationPathMatch = path.match(/^\/api\/operations\/([^/]+)$/);
-  if (operationPathMatch && request.method === "GET") {
-    const op = getOperation(decodeURIComponent(operationPathMatch[1]));
-    if (!op) return json({ error: "Operation not found" }, 404);
-    return json(op);
+    const operation = createOperation({
+      type: "move",
+      payload: body,
+      bucket: spec.bucket,
+      expandQueue: spec.queue,
+    });
+
+    await advanceOperation(operation, getAdapter());
+    return json(summarizeOperation(operation), 202);
   }
 
   const retryOperationMatch = path.match(/^\/api\/operations\/([^/]+)\/retry$/);
   if (retryOperationMatch && request.method === "POST") {
-    const op = getOperation(decodeURIComponent(retryOperationMatch[1]));
+    const op = operationMap.get(decodeURIComponent(retryOperationMatch[1]));
     if (!op) return json({ error: "Operation not found" }, 404);
-    if (op.status !== "failed") {
-      return json({ error: "Only failed operations may be retried" }, 400);
+    if (!TERMINAL_STATUSES.has(op.status)) {
+      return json({ error: "Only finished operations may be retried" }, 400);
+    }
+    if (!op.failed.length) {
+      return json({ error: "Operation has no failed items to retry" }, 400);
     }
 
-    op.status = "queued";
-    op.error = undefined;
-    op.updatedAt = new Date().toISOString();
-    queuedOperations.push(op.id);
-    if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(processOperationQueue(env, createAdapter));
-    }
-    return json(op, 202);
+    // Retry only the failed keys, so already completed work is never repeated.
+    const plan = op.failed
+      .map((item) => item.task || { kind: "delete", key: item.key })
+      .map((task) => ({ ...task, copied: false }));
+
+    const retried = createOperation({
+      type: op.type,
+      payload: op.payload,
+      bucket: op.bucket,
+      expandQueue: [],
+      plan,
+      planComplete: true,
+      retryOf: op.id,
+    });
+
+    await advanceOperation(retried, getAdapter());
+    return json(summarizeOperation(retried), 202);
   }
 
   const cancelOperationMatch = path.match(/^\/api\/operations\/([^/]+)\/cancel$/);
   if (cancelOperationMatch && request.method === "POST") {
-    const op = getOperation(decodeURIComponent(cancelOperationMatch[1]));
+    const op = operationMap.get(decodeURIComponent(cancelOperationMatch[1]));
     if (!op) return json({ error: "Operation not found" }, 404);
+
     op.cancelRequested = true;
-    if (op.status === "queued") {
-      op.status = "cancelled";
-      op.updatedAt = new Date().toISOString();
-      op.error = "Cancelled";
+    op.updatedAt = new Date().toISOString();
+    if (TERMINAL_STATUSES.has(op.status)) {
+      // Already finished: report the real outcome rather than claiming a cancel.
+      return json(summarizeOperation(op));
     }
-    return json(op);
+    if (!op.batchInFlight) {
+      finalize(op);
+    } else {
+      op.status = "cancelling";
+      refreshResult(op);
+    }
+    return json(summarizeOperation(op));
   }
 
   return json({ error: "Not found" }, 404);
@@ -444,7 +886,7 @@ async function authorize(request, env, authenticateCaller) {
  * Builds the Worker handler.
  *
  * `createAdapter` and `authenticate` exist so tests can prove that unauthenticated
- * requests never reach the S3 adapter.
+ * requests never reach the S3 adapter, and that operation batching behaves.
  */
 export function createHandler({
   createAdapter = (env) => new AwsS3WorkerAdapter(env),
@@ -459,6 +901,10 @@ export function createHandler({
     if (request.method === "OPTIONS") return preflight(request, env);
 
     if (path === "/api/health") return json({ ok: true });
+
+    if (path === "/api/capabilities") {
+      return json({ uploads: true, batchOperations: true, folderOperations: true });
+    }
 
     if (!path.startsWith("/api/")) {
       return json({ error: "Not found" }, 404);

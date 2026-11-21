@@ -65,6 +65,12 @@ front of it.
 
 ## Cloudflare Workers hosting
 
+Full guides live in [../docs](../docs/README.md):
+[deployment runbook](../docs/cloudflare-deployment.md),
+[security model](../docs/security.md),
+[development](../docs/development.md), and
+[costs and limits](../docs/costs-and-limits.md).
+
 ```
 Browser → Cloudflare Access → Cloudflare Worker → AWS S3
 ```

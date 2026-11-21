@@ -588,6 +588,13 @@
       .crumb { max-width: 140px; }
       #status-right { display: none; }
     }
+    .toolbar-sep { width: 1px; height: 18px; background: #2a3442; margin: 0 4px; }
+    .upload-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; border-bottom: 1px solid #1b2430; }
+    .upload-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .upload-actions { flex: 0 0 auto; }
+    .upload-cancel { background: none; border: 1px solid #2a3442; color: #c8d2df; border-radius: 4px; font-size: 11px; padding: 2px 6px; cursor: pointer; }
+    .op-progress-fill.indeterminate, .upload-bar-fill.indeterminate { width: 35% !important; animation: slide 1.1s linear infinite; }
+    @keyframes slide { from { transform: translateX(-110%); } to { transform: translateX(320%); } }
   </style>
 </head>
 <body>
@@ -608,6 +615,12 @@
       <button class="btn" id="nav-forward" title="Forward">&#8594;</button>
       <button class="btn" id="nav-up" title="Up">&#8593;</button>
       <button class="btn" id="nav-refresh" title="Refresh">&#8635;</button>
+      <div class="toolbar-sep"></div>
+      <button class="btn" id="upload-files" title="Upload files">Upload</button>
+      <button class="btn" id="upload-folder" title="Upload a folder">Upload folder</button>
+      <button class="btn" id="new-folder" title="Create a folder">New folder</button>
+      <input id="file-input" type="file" multiple hidden>
+      <input id="folder-input" type="file" webkitdirectory directory multiple hidden>
     </div>
 
     <div id="pathbar">
@@ -638,6 +651,8 @@
     </div>
 
     <section id="ops">
+      <div id="ops-header">Uploads (this browser)</div>
+      <div id="uploads-list"></div>
       <div id="ops-header">Operations</div>
       <div id="ops-list"></div>
     </section>
@@ -668,6 +683,9 @@
       dragSources: [],
       dragKind: null,
       operations: [],
+      uploads: [],
+      capabilities: {},
+      pollFailures: 0,
       loading: false,
       opsTimer: null,
     };
@@ -677,6 +695,21 @@
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
       return data;
+    }
+
+    async function loadCapabilities() {
+      try {
+        state.capabilities = await api("/api/capabilities");
+      } catch {
+        // The desktop Node server has no /api/capabilities; keep its local-sync behaviour.
+        state.capabilities = {};
+      }
+
+      const uploadsSupported = !!state.capabilities.uploads;
+      for (const id of ["upload-files", "upload-folder", "new-folder"]) {
+        const button = $(`#${id}`);
+        if (button) button.style.display = uploadsSupported ? "" : "none";
+      }
     }
 
     function escHtml(s) {
@@ -842,6 +875,16 @@
       }
 
       if (hasExternalDropPayload(dataTransfer)) {
+        if (state.capabilities.uploads) {
+          const entries = await collectDroppedEntries(dataTransfer);
+          if (!entries.length) {
+            setError("Unable to read the dropped files.");
+            return;
+          }
+          enqueueUploads(entries, bucket, destinationPrefix || "");
+          return;
+        }
+
         const sources = extractLocalPathsFromDataTransfer(dataTransfer);
         if (sources.length === 0) {
           setError("Unable to read local file paths from the dropped items.");
@@ -1322,8 +1365,14 @@
       const canPaste = !!state.clipboard;
 
       const menu = $("#context-menu");
+      const selectedItems = [...state.selected].map(findItemByPath).filter(Boolean);
+      // Every download entry point starts from the menu, so it must stay usable
+      // for multi-file selections; folders get an explicit explanation.
+      const canDownload = selectedItems.length > 0;
+
       menu.innerHTML = `
         <div class="menu-item" data-action="open">Open</div>
+        <div class="menu-item ${canDownload ? "" : "disabled"}" data-action="download">Download</div>
         <div class="menu-item ${canRename ? "" : "disabled"}" data-action="rename">Rename</div>
         <div class="menu-divider"></div>
         <div class="menu-item ${hasSelection ? "" : "disabled"}" data-action="copy">Copy</div>
@@ -1331,6 +1380,8 @@
         <div class="menu-item ${canPaste ? "" : "disabled"}" data-action="paste">Paste</div>
         <div class="menu-divider"></div>
         <div class="menu-item ${hasSelection ? "" : "disabled"}" data-action="delete">Delete</div>
+        <div class="menu-divider"></div>
+        <div class="menu-item" data-action="new-folder">New folder</div>
         <div class="menu-item" data-action="refresh">Refresh</div>
       `;
 
@@ -1346,6 +1397,10 @@
 
           if (action === "open" && item) {
             activateItem(item);
+          } else if (action === "download") {
+            downloadSelection();
+          } else if (action === "new-folder") {
+            await createFolderPrompt();
           } else if (action === "rename") {
             await runRenameSelection();
           } else if (action === "copy") {
@@ -1408,21 +1463,333 @@
       $("#status-right").textContent = `Ops Q:${queue} R:${running} F:${failed} | ${clip}`;
     }
 
+    function sanitizeUploadPath(path) {
+      return String(path || "")
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "")
+        .replace(/\/{2,}/g, "/");
+    }
+
+    function enqueueUploads(entries, bucket, destinationPrefix) {
+      if (!bucket || !entries.length) return;
+      const prefix = ensureFolderPrefix(destinationPrefix || "");
+      const added = [];
+
+      for (const entry of entries) {
+        const relPath = sanitizeUploadPath(entry.path || entry.file?.name || "");
+        if (!relPath || relPath.endsWith("/")) continue;
+        const key = `${prefix}${relPath}`;
+        const duplicate = state.uploads.some((item) => item.key === key && (item.status === "queued" || item.status === "uploading"));
+        if (duplicate) continue;
+        added.push({
+          id: `${Date.now()}-${added.length}-${Math.random().toString(16).slice(2)}`,
+          file: entry.file,
+          key,
+          bucket,
+          size: entry.file.size,
+          loaded: 0,
+          status: "queued",
+          error: null,
+          startedAt: null,
+          finishedAt: null,
+          xhr: null,
+        });
+      }
+
+      if (!added.length) return;
+
+      // Only keys present in the current listing can be checked cheaply; nested
+      // paths from folder uploads are not pre-checked.
+      const existingKeys = new Set(state.items.filter((item) => item.type === "file").map((item) => item.key));
+      const collisions = added.filter((item) => existingKeys.has(item.key));
+      if (collisions.length && !confirm(`${collisions.length} file(s) already exist here. Overwrite?`)) {
+        return;
+      }
+
+      state.uploads = [...added, ...state.uploads].slice(0, 200);
+      renderUploads();
+      pumpUploads();
+    }
+
+    function uploadOne(entry) {
+      return new Promise((resolve) => {
+        const url = `${API}/api/upload?bucket=${encodeURIComponent(entry.bucket)}&key=${encodeURIComponent(entry.key)}&contentType=${encodeURIComponent(entry.file.type || "application/octet-stream")}`;
+        const xhr = new XMLHttpRequest();
+        entry.xhr = xhr;
+        entry.status = "uploading";
+        entry.startedAt = new Date().toISOString();
+        renderUploads();
+
+        xhr.open("PUT", url);
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) return;
+          entry.loaded = event.loaded;
+          entry.size = event.total || entry.size;
+          renderUploads();
+        };
+        xhr.onload = () => {
+          entry.xhr = null;
+          entry.finishedAt = new Date().toISOString();
+          if (xhr.status >= 200 && xhr.status < 300) {
+            entry.status = "completed";
+            entry.loaded = entry.size;
+          } else {
+            entry.status = "failed";
+            let message = `Upload failed (HTTP ${xhr.status})`;
+            try {
+              const body = JSON.parse(xhr.responseText);
+              if (body?.error) message = body.error;
+            } catch {}
+            entry.error = message;
+          }
+          renderUploads();
+          resolve();
+        };
+        xhr.onerror = () => { entry.xhr = null; entry.status = "failed"; entry.error = "Network error"; entry.finishedAt = new Date().toISOString(); renderUploads(); resolve(); };
+        xhr.onabort = () => {
+          entry.xhr = null;
+          entry.status = "cancelled";
+          entry.finishedAt = new Date().toISOString();
+          renderUploads();
+          resolve();
+          // A cancel that loses a race with the final byte must not be reported
+          // as "nothing was written"; confirm the real outcome in the background.
+          void reconcileCancelledUpload(entry);
+        };
+        try {
+          xhr.send(entry.file);
+        } catch (error) {
+          // A send() that throws must not leave the queue wedged on this entry.
+          entry.xhr = null;
+          entry.status = "failed";
+          entry.error = error?.message || "Upload could not start";
+          entry.finishedAt = new Date().toISOString();
+          renderUploads();
+          resolve();
+        }
+      });
+    }
+
+    async function reconcileCancelledUpload(entry) {
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        if (entry.status !== "cancelled") return;
+        try {
+          const outcome = await api(`/api/object?bucket=${encodeURIComponent(entry.bucket)}&key=${encodeURIComponent(entry.key)}`);
+          if (outcome.exists) {
+            entry.status = "completed";
+            entry.loaded = outcome.size ?? entry.size;
+            entry.error = "Upload finished before cancel arrived";
+            renderUploads();
+            return;
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+    }
+
+    let uploadsPumping = false;
+    async function pumpUploads() {
+      if (uploadsPumping) return;
+      uploadsPumping = true;
+      try {
+        for (;;) {
+          const next = [...state.uploads].reverse().find((entry) => entry.status === "queued");
+          if (!next) break;
+          await uploadOne(next);
+        }
+      } finally {
+        uploadsPumping = false;
+        await refreshCurrentFolder();
+        await loadOperations();
+      }
+    }
+
+    function uploadStatusLabel(entry) {
+      if (entry.status === "uploading") {
+        return entry.size ? `${Math.round((entry.loaded / entry.size) * 100)}%` : "Uploading";
+      }
+      if (entry.status === "completed") return "Uploaded";
+      if (entry.status === "cancelled") return "Cancelled";
+      if (entry.status === "failed") return entry.error || "Failed";
+      return "Queued";
+    }
+
+    function renderUploads() {
+      const list = $("#uploads-list");
+      if (!list) return;
+
+      if (!state.uploads.length) {
+        list.innerHTML = '<div style="padding:10px;color:#5f6b7a">Uploaded files appear here with real byte progress. Drag files or folders onto the list, or use the Upload buttons.</div>';
+        return;
+      }
+
+      list.innerHTML = state.uploads.map((entry) => {
+        const pct = entry.size ? Math.min(100, Math.round((entry.loaded / entry.size) * 100)) : 0;
+        const indeterminate = entry.status === "uploading" && !entry.size;
+        const cancel = entry.status === "uploading" ? `<button class="upload-cancel" data-upload-id="${escHtml(entry.id)}">Cancel</button>` : "";
+        return `<div class="upload-row">
+          <div class="upload-name" title="${escHtml(entry.key)}">${escHtml(entry.key)}</div>
+          <div class="op-progress"><div class="op-progress-fill ${indeterminate ? "indeterminate" : ""}" style="width:${pct}%"></div></div>
+          <div>${escHtml(uploadStatusLabel(entry))}</div>
+          <div class="upload-actions">${cancel}</div>
+        </div>`;
+      }).join("");
+
+      list.querySelectorAll(".upload-cancel").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const entry = state.uploads.find((item) => item.id === btn.dataset.uploadId);
+          try { entry?.xhr?.abort(); } catch {}
+        });
+      });
+    }
+
+    async function collectDroppedEntries(dataTransfer) {
+      const entries = [];
+
+      const readEntry = (entry, prefix) => new Promise((resolve) => {
+        if (entry.isFile) {
+          entry.file(
+            (file) => { entries.push({ file, path: `${prefix}${file.name}` }); resolve(); },
+            () => resolve(),
+          );
+          return;
+        }
+        if (!entry.isDirectory) { resolve(); return; }
+
+        const reader = entry.createReader();
+        const readBatch = () => {
+          reader.readEntries(
+            async (batch) => {
+              if (!batch.length) { resolve(); return; }
+              for (const child of batch) await readEntry(child, `${prefix}${entry.name}/`);
+              readBatch();
+            },
+            () => resolve(),
+          );
+        };
+        readBatch();
+      });
+
+      for (const item of Array.from(dataTransfer?.items || [])) {
+        if (item.kind !== "file") continue;
+        const entry = item.webkitGetAsEntry?.();
+        if (entry) await readEntry(entry, "");
+      }
+
+      return entries;
+    }
+
+    async function createFolderPrompt() {
+      if (!state.currentBucket) return;
+      if (!state.capabilities.uploads) {
+        setError("Creating folders is not supported by this server.");
+        return;
+      }
+
+      const name = prompt("New folder name:");
+      if (name == null) return;
+      const trimmed = name.trim();
+      if (!trimmed || /[\\/]/.test(trimmed) || trimmed === "." || trimmed === "..") {
+        setError("Folder name cannot be empty or contain slashes.");
+        return;
+      }
+
+      const key = `${ensureFolderPrefix(state.currentPrefix)}${trimmed}/`;
+      await api(`/api/upload?bucket=${encodeURIComponent(state.currentBucket)}&key=${encodeURIComponent(key)}&contentType=application/x-directory`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: new Uint8Array(0),
+      });
+      await refreshCurrentFolder();
+    }
+
+    function downloadSelection() {
+      if (!state.currentBucket) return;
+      const files = selectedArray().map(findItemByPath).filter((item) => item && item.type === "file");
+      if (!files.length) {
+        setError("Folder download is not supported yet — select files to download.");
+        return;
+      }
+      for (const item of files) {
+        window.open(`/api/download?bucket=${encodeURIComponent(state.currentBucket)}&key=${encodeURIComponent(item.key)}`, "_blank");
+      }
+    }
+
+    function hasActiveWork() {
+      const uploadsActive = state.uploads.some((entry) => entry.status === "queued" || entry.status === "uploading");
+      const operationsActive = state.operations.some((op) => ["queued", "running", "cancelling"].includes(op.status));
+      return uploadsActive || operationsActive;
+    }
+
     async function loadOperations() {
       try {
         const data = await api("/api/operations");
         state.operations = data.operations || [];
+        state.pollFailures = 0;
         renderOperations();
       } catch (err) {
+        state.pollFailures = Math.min(6, (state.pollFailures || 0) + 1);
         const list = $("#ops-list");
         list.innerHTML = `<div class="panel-error">${escHtml(err.message)}</div>`;
       }
     }
 
+    // Large operations are planned and executed in bounded batches; the client
+    // advances them while something is visible to do so.
+    async function advanceActiveOperations() {
+      if (!state.capabilities.batchOperations) return;
+      const pending = state.operations.filter((op) => op.status === "queued" || op.status === "running").slice(0, 3);
+      if (!pending.length) return;
+
+      for (const op of pending) {
+        try {
+          await api(`/api/operations/${encodeURIComponent(op.id)}/advance`, { method: "POST" });
+        } catch (err) {
+          if (!/batch is already running/i.test(err.message)) throw err;
+        }
+      }
+      await loadOperations();
+    }
+
+    function nextPollDelay() {
+      if (document.hidden) return 30000;
+      const failures = state.pollFailures || 0;
+      if (failures > 0) return Math.min(30000, 1500 * 2 ** failures);
+      return hasActiveWork() ? 1200 : 30000;
+    }
+
+    function scheduleOpsPoll(delay) {
+      if (state.opsTimer) clearTimeout(state.opsTimer);
+      state.opsTimer = setTimeout(opsTick, delay);
+    }
+
+    async function opsTick() {
+      try {
+        await advanceActiveOperations();
+        await loadOperations();
+      } catch {
+        state.pollFailures = Math.min(6, (state.pollFailures || 0) + 1);
+      }
+      scheduleOpsPoll(nextPollDelay());
+    }
+
+    function statusLabel(status) {
+      const labels = {
+        queued: "Queued",
+        running: "Running",
+        cancelling: "Cancelling",
+        cancelled: "Cancelled",
+        completed: "Completed",
+        completed_with_errors: "Completed with errors",
+        failed: "Failed",
+      };
+      return labels[status] || status;
+    }
+
     function renderOperations() {
       const list = $("#ops-list");
       if (!state.operations.length) {
-        list.innerHTML = '<div style="padding:12px 10px;color:#5f6b7a">No operations yet. Background copy, move, rename, and delete tasks will appear here.</div>';
+        list.innerHTML = '<div style="padding:12px 10px;color:#5f6b7a">No operations yet. Large copy, move, rename, and delete tasks appear here and continue in bounded batches while this page is open.</div>';
         updateStatusBar();
         return;
       }
@@ -1430,41 +1797,47 @@
       list.innerHTML = state.operations
         .map((op) => {
           const p = op.progress || {};
-          const total = p.total || 0;
+          const total = typeof p.total === "number" ? p.total : null;
           const completed = p.completed || 0;
-          const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+          const failedCount = (op.result?.failed || []).length;
+          const pct = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
           const summary = op.type.toUpperCase();
-          let details = "";
-          if (op.status === "failed" && op.error) {
+          const label = statusLabel(op.status);
+
+          let details;
+          if (op.error) {
             details = op.error;
+          } else if (total == null) {
+            details = `${p.message || "Working"}${completed ? ` (${completed} done)` : ""}`;
           } else {
-            const progressText = total ? ` (${completed}/${total}, ${pct}%)` : "";
-            details = `${p.message || ""}${progressText}`;
+            details = `${p.message || ""} (${completed}/${total}, ${pct}%)`;
           }
+          if (failedCount) details = `${details} | ${failedCount} failed`;
+          const remainingCount = typeof op.result?.remainingCount === "number" ? op.result.remainingCount : 0;
+          if (remainingCount > 0) details = `${details} | ${remainingCount} remaining`;
+          if (op.retryOf) details = `${details} | retry of ${String(op.retryOf).slice(0, 8)}`;
 
-          const skipped = op.result?.skipped;
-          if (skipped) {
-            const skippedCount = (skipped.destinationSelf?.length || 0) + (skipped.recursive?.length || 0) + (skipped.redundantNested?.length || 0);
-            if (skippedCount > 0) {
-              details = `${details} | Skipped ${skippedCount}`.trim();
-            }
-          }
+          const started = op.startedAt ? shortDate(op.startedAt) : "";
+          const finished = op.finishedAt ? shortDate(op.finishedAt) : "";
+          const timing = started ? `${started}${finished ? ` to ${finished}` : " (running)"}` : "";
 
-          const showProgress = op.status === "running" || op.status === "completed";
-          const progressPct = showProgress ? (total > 0 ? pct : (op.status === "completed" ? 100 : 14)) : 0;
+          const showProgress = ["running", "cancelling", "completed", "completed_with_errors"].includes(op.status);
+          const indeterminate = showProgress && total == null;
+          const progressPct = showProgress ? (total ? pct : (op.status === "completed" ? 100 : 0)) : 0;
 
           return `<div class="op-row ${op.status}">
             <div class="op-main">
               <div class="op-title">
                 <span class="op-type">${summary}</span>
-                <span class="op-pill ${op.status}">${escHtml(op.status)}</span>
+                <span class="op-pill ${op.status}">${escHtml(label)}</span>
               </div>
-              <div class="op-meta" title="${escHtml(details || statusText(op))}">${escHtml(details || statusText(op))}</div>
-              <div class="op-progress"><div class="op-progress-fill" style="width:${progressPct}%"></div></div>
+              <div class="op-meta" title="${escHtml(details)}">${escHtml(details)}</div>
+              ${timing ? `<div class="op-meta">${escHtml(timing)}</div>` : ""}
+              <div class="op-progress"><div class="op-progress-fill ${indeterminate ? "indeterminate" : ""}" style="width:${progressPct}%"></div></div>
             </div>
-            <div class="op-status ${op.status}">${escHtml(op.status)}</div>
+            <div class="op-status ${op.status}">${escHtml(label)}</div>
             <div class="op-actions">
-              <button class="op-action-btn retry-btn" data-op-id="${escHtml(op.id)}">Retry</button>
+              <button class="op-action-btn retry-btn" data-op-id="${escHtml(op.id)}" style="display:${failedCount ? "inline-block" : "none"}">Retry</button>
               <button class="op-action-btn cancel-btn" data-op-id="${escHtml(op.id)}" style="display:${op.status === "queued" || op.status === "running" ? "inline-block" : "none"}">Cancel</button>
             </div>
           </div>`;
@@ -1496,6 +1869,28 @@
       $("#nav-forward").addEventListener("click", navigateForward);
       $("#nav-up").addEventListener("click", navigateUp);
       $("#nav-refresh").addEventListener("click", refreshCurrentFolder);
+
+      $("#upload-files").addEventListener("click", () => $("#file-input").click());
+      $("#upload-folder").addEventListener("click", () => $("#folder-input").click());
+      $("#new-folder").addEventListener("click", createFolderPrompt);
+
+      $("#file-input").addEventListener("change", () => {
+        const files = Array.from($("#file-input").files || []);
+        $("#file-input").value = "";
+        if (!files.length) return;
+        enqueueUploads(files.map((file) => ({ file, path: file.name })), state.currentBucket, state.currentPrefix || "");
+      });
+
+      $("#folder-input").addEventListener("change", () => {
+        const files = Array.from($("#folder-input").files || []);
+        $("#folder-input").value = "";
+        if (!files.length) return;
+        enqueueUploads(
+          files.map((file) => ({ file, path: file.webkitRelativePath || file.name })),
+          state.currentBucket,
+          state.currentPrefix || "",
+        );
+      });
 
       $$("th[data-sort]").forEach((th) => {
         th.addEventListener("click", () => {
@@ -1634,10 +2029,15 @@
       attachEvents();
       updateSortArrows();
       renderNavState();
+      renderUploads();
+      await loadCapabilities();
       await loadBuckets();
       await loadOperations();
 
-      state.opsTimer = setInterval(loadOperations, 1200);
+      scheduleOpsPoll(hasActiveWork() ? 1200 : 30000);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) scheduleOpsPoll(0);
+      });
     }
 
     boot();

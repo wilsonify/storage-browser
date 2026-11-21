@@ -35,3 +35,5 @@ s3-browser/.sea-build/
 s3-browser/src-tauri/target/
 s3-browser/src-tauri/bin/*.exe
 s3-browser/tauri-dist/
+
+.wrangler/

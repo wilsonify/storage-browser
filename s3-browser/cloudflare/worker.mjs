@@ -1,4 +1,5 @@
-import { AwsS3WorkerAdapter, validateBucketName, validateObjectKey } from "./s3-adapter.mjs";
+import { AwsS3WorkerAdapter } from "./s3-adapter.mjs";
+import { authenticate } from "./auth.mjs";
 
 const operationMap = new Map();
 const queuedOperations = [];
@@ -15,21 +16,32 @@ function json(data, status = 200, extraHeaders = {}) {
   });
 }
 
-function allowedOrigin(origin, env) {
-  const configured = (env.ALLOWED_ORIGINS || "").split(",").map((value) => value.trim()).filter(Boolean);
-  if (!origin) return true;
-  if (!configured.length) return true;
-  return configured.includes(origin);
+function configuredOrigins(env) {
+  return (env?.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
-function withCors(request, response, env) {
-  const origin = request.headers.get("Origin");
-  const headers = new Headers(response.headers);
+// An unset or empty ALLOWED_ORIGINS denies cross-origin use. CORS is not
+// authentication; it only decides which browser origins may read responses.
+function resolveAllowedOrigin(origin, env) {
+  if (!origin) return null;
+  const allowed = configuredOrigins(env);
+  if (!allowed.length) return null;
+  return allowed.includes(origin) ? origin : null;
+}
 
-  if (origin && allowedOrigin(origin, env)) {
-    headers.set("Access-Control-Allow-Origin", origin);
-    headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-requested-with");
+function withCors(request, env, response) {
+  const headers = new Headers(response.headers);
+  headers.append("Vary", "Origin");
+
+  const allowedOrigin = resolveAllowedOrigin(request.headers.get("Origin"), env);
+  if (allowedOrigin) {
+    headers.set("Access-Control-Allow-Origin", allowedOrigin);
+    headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    headers.set("Access-Control-Allow-Headers", "Content-Type");
+    headers.set("Access-Control-Allow-Credentials", "true");
   }
 
   return new Response(response.body, {
@@ -37,6 +49,42 @@ function withCors(request, response, env) {
     statusText: response.statusText,
     headers,
   });
+}
+
+function preflight(request, env) {
+  const headers = new Headers({
+    Vary: "Origin",
+    "Cache-Control": "no-store",
+  });
+
+  const allowedOrigin = resolveAllowedOrigin(request.headers.get("Origin"), env);
+  if (allowedOrigin) {
+    headers.set("Access-Control-Allow-Origin", allowedOrigin);
+    headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    headers.set("Access-Control-Allow-Headers", "Content-Type");
+    headers.set("Access-Control-Max-Age", "600");
+  }
+
+  return new Response(null, { status: 204, headers });
+}
+
+function errorResponse(error) {
+  const message = error instanceof Error ? error.message : "";
+
+  if (/^(Invalid bucket|Invalid key|Missing bucket|Missing bucket,)/.test(message)) {
+    return json({ error: message }, 400);
+  }
+  if (/^Bucket .* is not allowed/.test(message)) {
+    return json({ error: message }, 400);
+  }
+  if (/^Missing AWS credentials/.test(message)) {
+    return json({ error: "Object storage is not configured" }, 503);
+  }
+
+  // Unknown failures are not echoed: adapter and SDK messages can include bucket
+  // names, request ids and signature scopes. Log the error type only.
+  console.error("s3-browser request failed:", error instanceof Error ? error.name : "unknown error");
+  return json({ error: "Request failed" }, 500);
 }
 
 async function readJsonBody(request) {
@@ -74,7 +122,7 @@ function listOperations() {
   return [...operationMap.values()].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
-async function processOperationQueue(env) {
+async function processOperationQueue(env, createAdapter) {
   if (queueProcessorRunning) return;
   queueProcessorRunning = true;
 
@@ -88,7 +136,7 @@ async function processOperationQueue(env) {
       op.updatedAt = new Date().toISOString();
       op.progress = { total: 0, completed: 0, message: "Starting" };
 
-      const adapter = new AwsS3WorkerAdapter(env);
+      const adapter = createAdapter(env);
       const onProgress = (progress) => {
         op.progress = {
           ...op.progress,
@@ -160,33 +208,15 @@ async function processOperationQueue(env) {
   }
 }
 
-function emitProgress(operation, progress) {
-  operation.progress = { ...operation.progress, ...progress };
-  operation.updatedAt = new Date().toISOString();
-}
-
-async function handleApi(request, env, ctx) {
-  const url = new URL(request.url);
-  const path = url.pathname;
-
-  if (request.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, x-requested-with",
-      },
-    });
-  }
-
-  const adapter = new AwsS3WorkerAdapter(env);
-
-  if (path === "/api/health") {
-    return json({ ok: true, region: adapter.region, timestamp: new Date().toISOString() });
-  }
+async function handleApi(request, env, ctx, path, url, createAdapter) {
+  let adapter = null;
+  const getAdapter = () => {
+    if (!adapter) adapter = createAdapter(env);
+    return adapter;
+  };
 
   if (path === "/api/buckets" && request.method === "GET") {
-    const buckets = await adapter.listBuckets();
+    const buckets = await getAdapter().listBuckets();
     return json(buckets);
   }
 
@@ -196,7 +226,7 @@ async function handleApi(request, env, ctx) {
     const prefix = url.searchParams.get("prefix") || "";
     const continuationToken = url.searchParams.get("continuationToken") || undefined;
     const delimiter = url.searchParams.get("delimiter") || "/";
-    const data = await adapter.listObjects({
+    const data = await getAdapter().listObjects({
       bucket,
       prefix,
       continuationToken,
@@ -213,7 +243,7 @@ async function handleApi(request, env, ctx) {
       return json({ error: "Missing bucket or key" }, 400);
     }
 
-    const { head, body, key: safeKey } = await adapter.getDownloadStream(bucket, key);
+    const { head, body, key: safeKey } = await getAdapter().getDownloadStream(bucket, key);
     const fileName = safeKey.split("/").pop() || "download";
     const ext = fileName.split(".").pop()?.toLowerCase() || "";
     const contentTypeMap = {
@@ -232,15 +262,17 @@ async function handleApi(request, env, ctx) {
       gz: "application/gzip",
     };
 
-    const response = new Response(body, {
+    // The AWS SDK returns a Node-style stream under nodejs_compat. Workers needs
+    // a web ReadableStream, and the runtime sets the length itself.
+    const stream = typeof body?.transformToWebStream === "function" ? body.transformToWebStream() : body;
+
+    return new Response(stream, {
       headers: {
         "Content-Type": head.ContentType || contentTypeMap[ext] || "application/octet-stream",
-        "Content-Length": String(head.ContentLength || 0),
         "Content-Disposition": `inline; filename="${fileName}"`,
+        "Cache-Control": "private, no-store",
       },
     });
-
-    return response;
   }
 
   if (path === "/api/upload" && request.method === "POST") {
@@ -253,7 +285,7 @@ async function handleApi(request, env, ctx) {
       return json({ error: "Missing bucket, key, or file upload" }, 400);
     }
 
-    const reply = await adapter.uploadObject({
+    const reply = await getAdapter().uploadObject({
       bucket: String(bucket),
       key: String(key),
       body: await file.arrayBuffer(),
@@ -287,7 +319,7 @@ async function handleApi(request, env, ctx) {
 
     const operation = enqueueOperation(type, opPayload);
     if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(processOperationQueue(env));
+      ctx.waitUntil(processOperationQueue(env, createAdapter));
     }
     return json(operation, 202);
   }
@@ -310,7 +342,7 @@ async function handleApi(request, env, ctx) {
       destination: body.destination,
     });
     if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(processOperationQueue(env));
+      ctx.waitUntil(processOperationQueue(env, createAdapter));
     }
     return json(operation, 202);
   }
@@ -335,7 +367,7 @@ async function handleApi(request, env, ctx) {
     op.updatedAt = new Date().toISOString();
     queuedOperations.push(op.id);
     if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(processOperationQueue(env));
+      ctx.waitUntil(processOperationQueue(env, createAdapter));
     }
     return json(op, 202);
   }
@@ -356,9 +388,71 @@ async function handleApi(request, env, ctx) {
   return json({ error: "Not found" }, 404);
 }
 
-export default {
-  async fetch(request, env, ctx) {
-    const response = await handleApi(request, env, ctx);
-    return withCors(request, response, env);
-  },
-};
+async function authorize(request, env, authenticateCaller) {
+  let result;
+  try {
+    result = await authenticateCaller({
+      token: request.headers.get("Cf-Access-Jwt-Assertion"),
+      env,
+      request,
+    });
+  } catch {
+    return { ok: false, response: json({ error: "Authentication is not available" }, 503) };
+  }
+
+  if (result?.ok) return { ok: true, claims: result.claims };
+
+  if (result?.status === 503) {
+    return { ok: false, response: json({ error: "Authentication is not available" }, 503) };
+  }
+
+  return {
+    ok: false,
+    response: json({ error: "Unauthorized" }, 401, { "WWW-Authenticate": "Bearer" }),
+  };
+}
+
+/**
+ * Builds the Worker handler.
+ *
+ * `createAdapter` and `authenticate` exist so tests can prove that unauthenticated
+ * requests never reach the S3 adapter.
+ */
+export function createHandler({
+  createAdapter = (env) => new AwsS3WorkerAdapter(env),
+  authenticate: authenticateCaller = authenticate,
+} = {}) {
+  async function handleRequest(request, env, ctx) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    // Preflight is the only unauthenticated non-GET path. It carries no
+    // credentials and never grants authorization.
+    if (request.method === "OPTIONS") return preflight(request, env);
+
+    if (path === "/api/health") return json({ ok: true });
+
+    if (!path.startsWith("/api/")) {
+      return json({ error: "Not found" }, 404);
+    }
+
+    const auth = await authorize(request, env, authenticateCaller);
+    if (!auth.ok) return auth.response;
+
+    return handleApi(request, env, ctx, path, url, createAdapter);
+  }
+
+  return {
+    async fetch(request, env, ctx) {
+      let response;
+      try {
+        response = await handleRequest(request, env, ctx);
+      } catch (error) {
+        response = errorResponse(error);
+      }
+      return withCors(request, env, response);
+    },
+  };
+}
+
+export default createHandler();

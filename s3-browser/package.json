@@ -18,7 +18,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.800.0",
-    "@aws-sdk/credential-providers": "^3.800.0"
+    "@aws-sdk/credential-providers": "^3.800.0",
+    "@aws-sdk/xml-builder": "^3.972.40"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.5",

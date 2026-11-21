@@ -295,7 +295,7 @@ function stubAdapter(record) {
       record.calls.push("listObjects");
       return { folders: [], files: [], isTruncated: false, nextContinuationToken: null, prefix: "", bucket: "b" };
     },
-    async getDownloadStream() {
+    async getDownloadStream(_bucket, key) {
       record.calls.push("getDownloadStream");
       const stream = new ReadableStream({
         start(controller) {
@@ -305,7 +305,7 @@ function stubAdapter(record) {
       });
       return {
         head: { ContentType: "text/plain", ContentLength: 13 },
-        key: "folder/hello.txt",
+        key: key || "folder/hello.txt",
         body: { transformToWebStream: () => stream },
       };
     },
@@ -516,6 +516,22 @@ test("worker: downloads return a web stream without a manual content length", as
   assert.equal(response.headers.get("content-length"), null);
   assert.equal(await response.text(), "hello from s3");
   assert.equal(record.calls.includes("getDownloadStream"), true);
+});
+
+test("worker: non-ASCII download keys produce a byte-safe content disposition", async () => {
+  const { handler, record } = buildWorker();
+  const unicodeKey = "folder/unicode-测试 — name.txt";
+  const response = await callApi(handler, `/api/download?bucket=064592191516-audio&key=${encodeURIComponent(unicodeKey)}`, {
+    token: createToken(),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(record.calls.includes("getDownloadStream"), true);
+  const disposition = response.headers.get("content-disposition") || "";
+  // Header values are byte strings: non-ASCII must not reach the raw header.
+  assert.equal(/[^\x20-\x7e]/.test(disposition), false);
+  assert.match(disposition, /filename\*=UTF-8''/);
+  assert.equal(await response.text(), "hello from s3");
 });
 
 test("worker: invalid bucket parameters surface as 400, not 500", async () => {

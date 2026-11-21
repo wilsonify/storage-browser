@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test",
-    "test:cloudflare": "node --test cloudflare/auth.test.mjs cloudflare/worker.test.mjs",
+    "test:cloudflare": "node --test cloudflare/auth.test.mjs cloudflare/worker.test.mjs cloudflare/operations.test.mjs cloudflare/s3-adapter.test.mjs",
     "clean": "node scripts/clean.mjs",
     "timeout:probe": "node scripts/timeout-probe.mjs",
     "build:sidecar": "node scripts/build-sidecar.mjs",

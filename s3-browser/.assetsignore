@@ -1,0 +1,6 @@
+# Workers static assets are taken from this repository root.
+# Only the browser application is public. Everything else at the top level is
+# ignored, so new development files are not published by default.
+/*
+!/index.html
+!/assets

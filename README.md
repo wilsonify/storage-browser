@@ -4,6 +4,17 @@ A native HTML S3 file browser with a small local Node backend. No frontend
 framework, no bundler, no transpiler — the UI is a single `index.html` with
 vanilla HTML, CSS, and browser JavaScript.
 
+## Documentation
+
+Start at [docs/README.md](docs/README.md), which routes each audience to the
+right guide:
+
+- Users: [getting started](docs/getting-started.md)
+- Admins: [free-tier Cloudflare deployment](docs/cloudflare-deployment.md) and the
+  [security model](docs/security.md)
+- Developers: [development](docs/development.md)
+- Everyone: [costs and limits](docs/costs-and-limits.md)
+
 ## Features
 
 - Browse buckets and folder prefixes with breadcrumb navigation
@@ -31,7 +42,9 @@ vanilla HTML, CSS, and browser JavaScript.
 ```
 
 See [s3-browser/README.md](s3-browser/README.md) for local development, the
-Windows single-file distribution, and the Cloudflare Workers variant.
+Windows single-file distribution, and the Cloudflare Workers variant. The
+[docs/](docs/README.md) folder covers the Cloudflare deployment runbook, the
+security model, and the free-tier cost assessment.
 
 ## Run locally
 

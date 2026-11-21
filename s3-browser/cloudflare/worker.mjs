@@ -68,6 +68,34 @@ function preflight(request, env) {
   return new Response(null, { status: 204, headers });
 }
 
+function describeFailure(error) {
+  const clip = (value) => (typeof value === "string" ? value.slice(0, 1000) : undefined);
+
+  if (!(error instanceof Error)) {
+    return { name: "unknown error", message: clip(String(error)) || "unknown error" };
+  }
+
+  const details = {
+    name: clip(error.name) || "Error",
+    message: clip(error.message) || "(empty message)",
+  };
+
+  // AWS SDK errors carry $metadata; plain errors and unexpected shapes must not throw here.
+  const metadata = error.$metadata && typeof error.$metadata === "object" ? error.$metadata : null;
+  if (Number.isInteger(metadata?.httpStatusCode)) {
+    details.httpStatusCode = metadata.httpStatusCode;
+  }
+
+  // S3 service errors commonly put the code in `name` (e.g. NoSuchKey) and sometimes `Code`.
+  const code = clip(error.Code) || clip(error.code);
+  if (code) details.code = code;
+  if (error.$fault === "client" || error.$fault === "server") details.fault = error.$fault;
+  const requestId = clip(metadata?.requestId);
+  if (requestId) details.requestId = requestId;
+
+  return details;
+}
+
 function errorResponse(error) {
   const message = error instanceof Error ? error.message : "";
 
@@ -81,9 +109,9 @@ function errorResponse(error) {
     return json({ error: "Object storage is not configured" }, 503);
   }
 
-  // Unknown failures are not echoed: adapter and SDK messages can include bucket
-  // names, request ids and signature scopes. Log the error type only.
-  console.error("s3-browser request failed:", error instanceof Error ? error.name : "unknown error");
+  // Unknown failures keep an opaque client body, but the logs must identify them:
+  // record the message plus the SDK's HTTP status and service error code when present.
+  console.error("s3-browser request failed:", JSON.stringify(describeFailure(error)));
   return json({ error: "Request failed" }, 500);
 }
 

@@ -1,0 +1,60 @@
+name: quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    name: verify (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.x", "24.x"]
+    defaults:
+      run:
+        working-directory: s3-browser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: s3-browser/package-lock.json
+      - run: npm ci
+      # Syntax, tests with the 80/80/80 Scope A coverage gate, a real Wrangler
+      # bundle dry-run, and the production dependency audit. No secrets, no deploy.
+      - run: npm run verify
+
+  sonar:
+    name: sonar gate
+    # Optional: enable by setting repository variable SONAR_ENABLED=true and a
+    # SONAR_TOKEN secret pointing at a reachable SonarQube server.
+    if: ${{ vars.SONAR_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: s3-browser
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.x"
+          cache: npm
+          cache-dependency-path: s3-browser/package-lock.json
+      - run: npm ci
+      - run: npm run test:coverage
+      - name: Scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        run: npx --yes sonarqube-scanner
+        working-directory: .
+      - name: Compare Sonar with the local lcov report
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        run: npm run sonar:check

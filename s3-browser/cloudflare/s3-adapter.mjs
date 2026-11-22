@@ -58,7 +58,16 @@ export function validateBucketName(value) {
 export function sanitizePrefix(value) {
   if (value == null || value === "") return "";
   const raw = String(value).replace(/\\/g, "/");
-  const stripped = raw.replace(/^\/+/, "").replace(/\/+$/g, "/");
+
+  let start = 0;
+  while (start < raw.length && raw.charCodeAt(start) === 47) start += 1;
+
+  let end = raw.length;
+  while (end > start && raw.charCodeAt(end - 1) === 47) end -= 1;
+
+  const hadTrailingSlash = end < raw.length;
+  const trimmed = raw.slice(start, end);
+  const stripped = hadTrailingSlash && trimmed ? `${trimmed}/` : trimmed;
   if (stripped.includes("..")) {
     throw new Error(`Invalid key: ${value}`);
   }

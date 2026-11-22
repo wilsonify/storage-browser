@@ -23,12 +23,39 @@ export function __resetCaches() {
   jwksCache.clear();
 }
 
+function stripTrailingSlashes(value) {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return value.slice(0, end);
+}
+
+function isAsciiAlphaNumeric(char) {
+  return (char >= "a" && char <= "z") || (char >= "0" && char <= "9");
+}
+
+/**
+ * Structural equivalent of the previous domain regular expression: at least two
+ * dot-separated labels, each 1-63 chars, alphanumeric at both ends. Doing it
+ * label by label removes the nested quantifiers that made matching super-linear.
+ */
+function isValidTeamDomain(domain) {
+  if (domain.length === 0 || domain.length > 253) return false;
+  const labels = domain.split(".");
+  if (labels.length < 2) return false;
+
+  return labels.every((label) => {
+    if (label.length === 0 || label.length > 63) return false;
+    if (!isAsciiAlphaNumeric(label[0]) || !isAsciiAlphaNumeric(label[label.length - 1])) return false;
+    for (const char of label) {
+      if (!isAsciiAlphaNumeric(char) && char !== "-") return false;
+    }
+    return true;
+  });
+}
+
 function normalizeTeamDomain(value) {
-  return String(value)
-    .trim()
-    .replace(/^https?:\/\//i, "")
-    .replace(/\/+$/, "")
-    .toLowerCase();
+  const withoutScheme = String(value).trim().replace(/^https?:\/\//i, "");
+  return stripTrailingSlashes(withoutScheme).toLowerCase();
 }
 
 /**
@@ -41,7 +68,7 @@ export function getAccessConfig(env) {
   const teamDomain = normalizeTeamDomain(rawTeamDomain);
 
   if (!teamDomain || !audience) return null;
-  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(teamDomain)) return null;
+  if (!isValidTeamDomain(teamDomain)) return null;
 
   return {
     teamDomain,
@@ -131,7 +158,7 @@ async function loadSigningKeys(config, fetchImpl, now, { force = false } = {}) {
 }
 
 function normalizeIssuer(value) {
-  return String(value).trim().replace(/\/+$/, "").toLowerCase();
+  return stripTrailingSlashes(String(value).trim()).toLowerCase();
 }
 
 function audienceMatches(claimValue, expected) {

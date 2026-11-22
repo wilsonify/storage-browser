@@ -369,7 +369,7 @@
       min-height: 0;
     }
 
-    #ops-header {
+    .ops-header {
       padding: 8px 10px;
       font-weight: 700;
       color: #2e4055;
@@ -380,7 +380,7 @@
       gap: 8px;
     }
 
-    #ops-header::before {
+    .ops-header::before {
       content: "\2699";
       font-size: 14px;
       color: #627890;
@@ -619,7 +619,9 @@
       <button class="btn" id="upload-files" title="Upload files">Upload</button>
       <button class="btn" id="upload-folder" title="Upload a folder">Upload folder</button>
       <button class="btn" id="new-folder" title="Create a folder">New folder</button>
+      <label class="sr-only" for="file-input">Upload files</label>
       <input id="file-input" type="file" multiple hidden>
+      <label class="sr-only" for="folder-input">Upload a folder</label>
       <input id="folder-input" type="file" webkitdirectory directory multiple hidden>
     </div>
 
@@ -651,9 +653,9 @@
     </div>
 
     <section id="ops">
-      <div id="ops-header">Uploads (this browser)</div>
+      <div class="ops-header">Uploads (this browser)</div>
       <div id="uploads-list"></div>
-      <div id="ops-header">Operations</div>
+      <div class="ops-header">Operations</div>
       <div id="ops-list"></div>
     </section>
   </section>
@@ -664,6 +666,7 @@
     const API = "";
     const $ = (s) => document.querySelector(s);
     const $$ = (s) => document.querySelectorAll(s);
+    let uploadIdSeq = 0;
 
     const state = {
       currentBucket: null,
@@ -1339,7 +1342,7 @@
       const item = findItemByPath(paths[0]);
       if (!item) return;
 
-      const initial = item.type === "folder" ? item.name : item.name;
+      const initial = item.name;
       const newName = prompt("Rename to:", initial);
       if (!newName || newName === initial) return;
 
@@ -1510,7 +1513,7 @@
         const duplicate = state.uploads.some((item) => item.key === key && (item.status === "queued" || item.status === "uploading"));
         if (duplicate) continue;
         added.push({
-          id: `${Date.now()}-${added.length}-${Math.random().toString(16).slice(2)}`,
+          id: `up_${Date.now()}_${uploadIdSeq++}`,
           file: entry.file,
           key,
           bucket,

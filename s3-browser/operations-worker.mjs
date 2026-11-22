@@ -11,8 +11,14 @@ export class OperationsWorker {
 
   start() {
     if (this.timer) return;
-    this.timer = setInterval(() => this.wake(), POLL_INTERVAL_MS);
-    this.wake();
+    this.timer = setInterval(() => this.kick(), POLL_INTERVAL_MS);
+    this.kick();
+  }
+
+  // Fire-and-forget trigger: wake() is async, so its rejection is handled here
+  // instead of becoming an unhandled rejection.
+  kick() {
+    void this.wake().catch((err) => console.error("operation worker failed:", err));
   }
 
   stop() {

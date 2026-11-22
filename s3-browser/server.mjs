@@ -41,18 +41,20 @@ function openBrowser(url) {
 
   const options = { detached: true, stdio: "ignore" };
   if (process.platform === "win32") {
-    const child = spawn("cmd", ["/c", "start", "", url], options);
+    // Absolute path: launchers must never be resolved through PATH.
+    const cmdExe = process.env.ComSpec || join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe");
+    const child = spawn(cmdExe, ["/c", "start", "", url], options);
     child.unref();
     return;
   }
 
   if (process.platform === "darwin") {
-    const child = spawn("open", [url], options);
+    const child = spawn("/usr/bin/open", [url], options);
     child.unref();
     return;
   }
 
-  const child = spawn("xdg-open", [url], options);
+  const child = spawn("/usr/bin/xdg-open", [url], options);
   child.unref();
 }
 
@@ -215,7 +217,7 @@ async function handleEnqueueOperation(req, res) {
 
   try {
     const operation = await operationStore.enqueue(type, payload);
-    operationWorker.wake();
+    operationWorker.kick();
     json(res, operation, 202);
   } catch (err) {
     json(res, { error: err.message }, 500);
@@ -248,7 +250,7 @@ async function handleSyncFolderToS3(req, res) {
       destination,
       overwrite: overwrite === true,
     });
-    operationWorker.wake();
+    operationWorker.kick();
     return json(res, operation, 202);
   } catch (err) {
     return json(res, { error: err.message }, 500);
@@ -274,7 +276,7 @@ async function handleLegacyMove(req, res) {
       sources: [source],
       destination,
     });
-    operationWorker.wake();
+    operationWorker.kick();
     json(res, { operationId: operation.id, status: operation.status }, 202);
   } catch (err) {
     json(res, { error: err.message }, 500);
@@ -297,7 +299,7 @@ async function handleRetryOperation(_req, res, id) {
   if (operation.status !== "failed") return json(res, { error: "Only failed operations can be retried" }, 400);
 
   const retried = await operationStore.retry(id);
-  operationWorker.wake();
+  operationWorker.kick();
   json(res, retried);
 }
 

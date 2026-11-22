@@ -89,6 +89,18 @@ test("getAccessConfig rejects incomplete or malformed configuration", () => {
   assert.equal(getAccessConfig({ ACCESS_TEAM_DOMAIN: TEAM_DOMAIN }), null);
   assert.equal(getAccessConfig({ ACCESS_AUD: AUDIENCE }), null);
   assert.equal(getAccessConfig({ ACCESS_TEAM_DOMAIN: "not a domain", ACCESS_AUD: AUDIENCE }), null);
+  for (const invalid of ["a", "a..b", "-a.b", "a-.b", `${"a".repeat(64)}.b`]) {
+    assert.equal(
+      getAccessConfig({ ACCESS_TEAM_DOMAIN: invalid, ACCESS_AUD: AUDIENCE }),
+      null,
+      `${invalid} is not a valid team domain`,
+    );
+  }
+  assert.equal(
+    getAccessConfig({ ACCESS_TEAM_DOMAIN: "A.B", ACCESS_AUD: AUDIENCE }).teamDomain,
+    "a.b",
+    "domains are lowercased before validation",
+  );
 
   const config = getAccessConfig({ ACCESS_TEAM_DOMAIN: `https://${TEAM_DOMAIN}/`, ACCESS_AUD: AUDIENCE });
   assert.equal(config.issuer, ISSUER);

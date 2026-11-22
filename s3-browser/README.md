@@ -23,6 +23,27 @@ npm test
 
 Then open **http://localhost:3737**
 
+## Quality gates
+
+```bash
+npm run verify        # syntax + coverage gate + bundle dry-run + prod audit
+npm run test:coverage # tests with the 80/80/80 Scope A gate, writes coverage/lcov.info
+npm run sonar:check   # Sonar gate + coverage cross-check (needs SONAR_TOKEN)
+```
+
+`verify` prints the measured scope and the exclusions on every run. The rules live
+in [`docs/qa/coverage-policy.md`](../docs/qa/coverage-policy.md),
+[`docs/qa/quality-gates.md`](../docs/qa/quality-gates.md) and
+[`docs/qa/test-strategy.md`](../docs/qa/test-strategy.md); the measured starting
+point is [`docs/qa/quality-baseline.md`](../docs/qa/quality-baseline.md).
+Enable the pre-push hook once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Node 22.8 or newer is required (see `engines` and `.nvmrc`).
+
 ## Single-file Windows distribution
 
 Build a standalone `exe` (includes Node runtime, backend, UI, and dependencies):

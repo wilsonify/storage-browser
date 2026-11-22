@@ -645,10 +645,14 @@ async function handleApi(request, env, ctx, path, url, createAdapter) {
     const asciiFileName = fileName.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
     const encodedFileName = encodeURIComponent(fileName).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 
+    // Preview keeps the file inline; an explicit download asks for attachment so
+    // browsers save text, images and PDFs instead of rendering them in a tab.
+    const disposition = url.searchParams.get("download") === "1" ? "attachment" : "inline";
+
     return new Response(stream, {
       headers: {
         "Content-Type": head.ContentType || contentTypeMap[ext] || "application/octet-stream",
-        "Content-Disposition": `inline; filename="${asciiFileName}"; filename*=UTF-8''${encodedFileName}`,
+        "Content-Disposition": `${disposition}; filename="${asciiFileName}"; filename*=UTF-8''${encodedFileName}`,
         "Cache-Control": "private, no-store",
       },
     });

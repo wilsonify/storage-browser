@@ -1,0 +1,10 @@
+#!/bin/sh
+# Enable once per clone: git config core.hooksPath .githooks
+# Bypass only with a stated reason: git push --no-verify
+set -e
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root/s3-browser"
+
+echo "pre-push: running npm run verify (syntax, coverage gate, bundle dry-run, prod audit)"
+npm run verify

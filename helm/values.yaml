@@ -25,3 +25,15 @@ persistence:
   size: 1Gi
   # Empty uses the cluster default StorageClass (local-path on k3s).
   storageClass: ""
+
+# Container resource requests/limits. The ephemeral-storage allowance covers the
+# operation-queue writes when persistence is disabled (emptyDir).
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+    ephemeralStorage: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+    ephemeralStorage: 1Gi

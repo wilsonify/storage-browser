@@ -514,6 +514,7 @@ test("worker: downloads return a web stream without a manual content length", as
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "text/plain");
   assert.equal(response.headers.get("content-length"), null);
+  assert.match(response.headers.get("content-disposition") || "", /^inline;/, "preview keeps rendering the file");
   assert.equal(await response.text(), "hello from s3");
   assert.equal(record.calls.includes("getDownloadStream"), true);
 });
@@ -532,6 +533,32 @@ test("worker: non-ASCII download keys produce a byte-safe content disposition", 
   assert.equal(/[^\x20-\x7e]/.test(disposition), false);
   assert.match(disposition, /filename\*=UTF-8''/);
   assert.equal(await response.text(), "hello from s3");
+});
+
+test("worker: an explicit download forces an attachment disposition", async () => {
+  const { handler } = buildWorker();
+  const response = await callApi(handler, "/api/download?bucket=064592191516-audio&key=folder%2Fhello.txt&download=1", {
+    token: createToken(),
+  });
+
+  assert.equal(response.status, 200);
+  const disposition = response.headers.get("content-disposition") || "";
+  assert.match(disposition, /^attachment; filename="hello\.txt"/);
+  assert.match(disposition, /filename\*=UTF-8''hello\.txt/, "the RFC 5987 name survives for unicode-aware browsers");
+  assert.equal(await response.text(), "hello from s3");
+});
+
+test("worker: a forced download keeps the byte-safe unicode filename", async () => {
+  const { handler } = buildWorker();
+  const unicodeKey = "folder/unicode-测试 — name.txt";
+  const response = await callApi(handler, `/api/download?bucket=064592191516-audio&key=${encodeURIComponent(unicodeKey)}&download=1`, {
+    token: createToken(),
+  });
+
+  const disposition = response.headers.get("content-disposition") || "";
+  assert.match(disposition, /^attachment;/);
+  assert.equal(/[^\x20-\x7e]/.test(disposition), false);
+  assert.match(disposition, /filename\*=UTF-8''/);
 });
 
 test("worker: invalid bucket parameters surface as 400, not 500", async () => {

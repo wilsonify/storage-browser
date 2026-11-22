@@ -33,7 +33,15 @@ cd s3-browser
 npm install
 ```
 
-Open [wrangler.jsonc](../s3-browser/wrangler.jsonc). The values you must review:
+`wrangler.jsonc` is gitignored because it holds deployment-specific bucket names
+and Access values. Copy the committed template, then review it:
+
+```bash
+cd s3-browser
+cp wrangler.example.jsonc wrangler.jsonc
+```
+
+The values you must review:
 
 | Key | What to do |
 | --- | --- |
@@ -72,8 +80,8 @@ empty. That is intentional: nothing is reachable before Access is configured.
 5. In that Access application, copy two values:
    - the **team domain**, e.g. `my-team.cloudflareaccess.com`
    - the **Application Audience (AUD) Tag**, a long hex string
-6. Put them into the Worker as vars — either in `wrangler.jsonc`, or in the
-   dashboard under **Settings → Variables and Secrets** — then redeploy:
+6. Put them into the Worker as vars — either in your local `wrangler.jsonc`, or in
+   the dashboard under **Settings → Variables and Secrets** — then redeploy:
 
 ```bash
 npx wrangler deploy

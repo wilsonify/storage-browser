@@ -118,7 +118,7 @@ building a separate client that is itself behind the same Access application.
 That publishes exactly three files: `index.html`,
 `assets/s3_browser_icon.ico`, `assets/s3_browser_icon.svg`. Everything else —
 `node_modules`, `src-tauri`, `dist`, `scripts`, `test`, `cloudflare`,
-`package.json`, `package-lock.json`, `wrangler.jsonc`, docs, `.data`,
+`package.json`, `package-lock.json`, `wrangler.jsonc` (gitignored), docs, `.data`,
 `.freebuff`, `.wrangler` — is excluded.
 
 Keep it a whitelist. An ignore-list version silently publishes every file added
@@ -220,5 +220,5 @@ happens in the Access policy; their existing session lasts until the token expir
 - [ ] `.assetsignore` intact; dry run shows three assets
 - [ ] AWS key is a dedicated IAM user, scoped to the intended buckets and actions
 - [ ] `ALLOWED_BUCKETS` matches that IAM scope
-- [ ] No secrets in `wrangler.jsonc`, committed `.dev.vars`, or the repository
+- [ ] No secrets in the local (gitignored) `wrangler.jsonc`, committed `.dev.vars`, or the repository
 - [ ] Someone knows how to rotate the AWS key and revoke an Access user

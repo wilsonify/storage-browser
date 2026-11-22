@@ -19,7 +19,7 @@ tests passing and Scope A at 96.92 / 92.70 / 94.76.
 | G1 | Tests | `npm test` | Any failing test |
 | G2 | Coverage thresholds | `npm run test:coverage` | Scope A below 80 % lines / branches / functions, or a missed stricter per-area target |
 | G3 | Syntax | `npm run check:syntax` | Any `.mjs`/`.js` file that does not parse, or an inline `<script>` in `index.html` that does not parse |
-| G4 | Wrangler bundle | `npm run check:deploy` (`wrangler deploy --dry-run`) | Worker no longer bundles, or `wrangler.jsonc` is invalid |
+| G4 | Wrangler bundle | `npm run check:deploy` (`wrangler deploy --dry-run`) | Worker no longer bundles, or the Worker config is invalid |
 | G5 | Production dependency audit | `npm run audit:prod` (`npm audit --omit=dev`) | Any advisory in shipped dependencies |
 | G6 | Sonar gate | `npm run sonar:check` (needs `SONAR_TOKEN`, server up) | New issues, new hotspots, or quality gate ERROR |
 | G7 | Artifact hygiene | `git check-ignore -v s3-browser/coverage/lcov.info s3-browser/.wrangler/verify` | Generated output not ignored (checked by hand; not part of `verify`) |
@@ -40,9 +40,10 @@ build helpers) and the unmeasured inline UI script. This is a parse check, not a
 lint; there is still no lint configuration (see
 [`remediation-plan.md`](remediation-plan.md), P2).
 
-**G4 — bundle.** `wrangler deploy --dry-run` builds the real Worker bundle with
-the real `wrangler.jsonc` and compatibility flags, and writes nothing to
-Cloudflare. It is the closest local proxy for "this still deploys" and catches
+**G4 — bundle.** `wrangler deploy --dry-run` builds the Worker bundle with the
+real compatibility flags and writes nothing to Cloudflare. It prefers the local,
+gitignored `wrangler.jsonc` and falls back to the committed
+`wrangler.example.jsonc`, so a fresh clone and CI still validate the build. It is the closest local proxy for "this still deploys" and catches
 bad imports, incompatible Node APIs and asset-config errors. It does not prove
 workerd runtime behaviour; `wrangler dev` remains blocked (F-19).
 

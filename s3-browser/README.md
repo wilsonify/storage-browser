@@ -125,7 +125,7 @@ Sources: [Workers limits](https://developers.cloudflare.com/workers/platform/lim
 
 ### Files
 
-- `wrangler.jsonc` — Worker configuration, `nodejs_compat`, public vars
+- `wrangler.example.jsonc` — Worker config template; copy it to the gitignored `wrangler.jsonc` and fill in your bucket/Access values
 - `.assetsignore` — whitelist: only `index.html` and `assets/` are published
 - `cloudflare/worker.mjs` — Worker entry point implementing the `/api/*` endpoints
 - `cloudflare/auth.mjs` — Cloudflare Access JWT verification (RS256, WebCrypto)
@@ -152,7 +152,7 @@ otherwise be reachable directly.
 
 ### Configuration
 
-Vars in [wrangler.jsonc](wrangler.jsonc) (public values):
+Vars in your local `wrangler.jsonc`, copied from [wrangler.example.jsonc](wrangler.example.jsonc) (public values):
 
 | Name | Purpose |
 | --- | --- |
@@ -219,7 +219,7 @@ Then:
    or identity-provider policy so only you can reach it.
 2. Copy the access team domain and the application's AUD tag from the Access
    application into `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` (dashboard → Worker →
-   Settings → Variables, or `wrangler.jsonc`).
+   Settings → Variables, or your local `wrangler.jsonc`).
 3. Set the AWS secrets as shown above, then redeploy after any config change.
 
 Verify an upload manifest before deploying:

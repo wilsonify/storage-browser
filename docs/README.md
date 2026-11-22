@@ -72,7 +72,7 @@ storage-browser/
 │   ├── index.html        # Single-file vanilla UI
 │   ├── server.mjs        # Local Node backend
 │   ├── cloudflare/       # Worker: worker.mjs, auth.mjs, s3-adapter.mjs, tests
-│   ├── wrangler.jsonc    # Worker configuration
+│   ├── wrangler.example.jsonc  # Worker config template (copy to wrangler.jsonc)
 │   ├── .assetsignore     # Public asset whitelist
 │   ├── src-tauri/        # Desktop shell
 │   └── test/             # Node test suites

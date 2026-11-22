@@ -1,0 +1,39 @@
+// Template for the local Worker configuration.
+//
+// Copy this file to `wrangler.jsonc` (gitignored) and replace every placeholder.
+// The real file holds deployment-specific bucket names and Access values, so it is
+// never committed. `npm run check:deploy` validates `wrangler.jsonc` when present
+// and falls back to this template otherwise, which keeps CI working without it.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "s3-browser",
+  "main": "./cloudflare/worker.mjs",
+  "compatibility_date": "2025-09-24",
+  // @aws-sdk/client-s3 imports node:crypto, node:stream, node:http and node:fs.
+  "compatibility_flags": ["nodejs_compat"],
+  // Wrangler bundles the browser build of @aws-sdk/xml-builder, whose parser needs
+  // DOMParser (absent in Workers). Aliasing to the CommonJS build selects the
+  // pure-JS parser so every XML-parsing S3 call works in workerd.
+  "alias": {
+    "@aws-sdk/xml-builder": "@aws-sdk/xml-builder/dist-cjs/index.js"
+  },
+  "assets": {
+    // Public assets are whitelisted in .assetsignore: index.html and assets/ only.
+    "directory": "./",
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "S3_BROWSER_BUCKET": "your-bucket",
+    "ALLOWED_BUCKETS": "your-bucket",
+    // Set both before the first deployment; empty values make every API request
+    // fail closed with 503. Values are public identifiers, not secrets.
+    "ACCESS_TEAM_DOMAIN": "https://your-team.cloudflareaccess.com",
+    "ACCESS_AUD": "your-access-aud-tag",
+    // Comma-separated exact origins. Empty denies cross-origin use entirely;
+    // the bundled UI is same-origin and does not need entries here.
+    "ALLOWED_ORIGINS": ""
+  },
+  "observability": {
+    "enabled": true
+  }
+}

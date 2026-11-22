@@ -11,7 +11,7 @@
     "test:cloudflare": "node --test cloudflare/auth.test.mjs cloudflare/worker.test.mjs cloudflare/operations.test.mjs cloudflare/s3-adapter.test.mjs",
     "test:coverage": "node scripts/coverage.mjs",
     "check:syntax": "node scripts/check-syntax.mjs",
-    "check:deploy": "wrangler deploy --dry-run --outdir .wrangler/verify",
+    "check:deploy": "node scripts/check-deploy.mjs",
     "audit:prod": "npm audit --omit=dev",
     "sonar:check": "node scripts/sonar-check.mjs",
     "verify": "npm run check:syntax && npm run test:coverage && npm run check:deploy && npm run audit:prod",

@@ -20,7 +20,7 @@ const INCLUDED = [
 const EXCLUDED = [
   "index.html inline script - not loadable by Node; workstream T7/T8",
   "scripts/package-win.mjs, scripts/build-sidecar.mjs - release-only tooling",
-  "scripts/clean.mjs, scripts/timeout-probe.mjs, scripts/coverage.mjs, scripts/check-syntax.mjs, scripts/sonar-check.mjs - dev tooling",
+  "scripts/clean.mjs, scripts/timeout-probe.mjs, scripts/coverage.mjs, scripts/check-syntax.mjs, scripts/check-deploy.mjs, scripts/sonar-check.mjs - dev tooling",
   "src-tauri/** - Rust/Tauri shell, not a Node module",
   "test/** and cloudflare/*.test.mjs - test code",
   "node_modules, dist, tauri-dist, coverage, .wrangler - generated or vendored",

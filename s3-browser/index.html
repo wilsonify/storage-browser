@@ -953,6 +953,14 @@
         list.querySelectorAll(".bucket-item").forEach((el) => {
           el.addEventListener("click", () => selectBucket(el.dataset.bucket));
 
+          // Firefox only accepts a drop when dragenter is cancelled as well.
+          el.addEventListener("dragenter", (e) => {
+            if (!hasExternalDropPayload(e.dataTransfer)) return;
+            e.preventDefault();
+            el.classList.add("drop-target");
+            e.dataTransfer.dropEffect = "copy";
+          });
+
           el.addEventListener("dragover", (e) => {
             if (!hasExternalDropPayload(e.dataTransfer)) return;
             e.preventDefault();
@@ -1155,6 +1163,14 @@
         });
 
         if (item.type === "folder") {
+          // Firefox only accepts a drop when dragenter is cancelled as well.
+          tr.addEventListener("dragenter", (e) => {
+            if (!(state.dragKind === "internal" || hasExternalDropPayload(e.dataTransfer))) return;
+            e.preventDefault();
+            tr.classList.add("drop-target");
+            e.dataTransfer.dropEffect = state.dragKind === "internal" ? "move" : "copy";
+          });
+
           tr.addEventListener("dragover", (e) => {
             if (!(state.dragKind === "internal" || hasExternalDropPayload(e.dataTransfer))) return;
             e.preventDefault();
@@ -1206,7 +1222,19 @@
       }
 
       state.focusedPath = path;
-      renderTable();
+      applySelectionClasses();
+    }
+
+    // Rebuilding the table on every click replaces the row between the two
+    // clicks of a double-click, so the browser never fires dblclick on it.
+    // Selection only changes classes, so update them in place.
+    function applySelectionClasses() {
+      $("#tbody").querySelectorAll("tr").forEach((tr) => {
+        const path = tr.dataset.path;
+        tr.classList.toggle("selected", state.selected.has(path));
+        tr.classList.toggle("focused", state.focusedPath === path);
+      });
+      updateStatusBar();
     }
 
     function activateItem(item) {
@@ -1703,6 +1731,18 @@
       await refreshCurrentFolder();
     }
 
+    // Firefox allows only one window.open() per user gesture and blocks the rest,
+    // so a batch download must be in-document anchor clicks, not popup tabs.
+    function triggerDownload(url) {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "";
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+
     function downloadSelection() {
       if (!state.currentBucket) return;
       const files = selectedArray().map(findItemByPath).filter((item) => item && item.type === "file");
@@ -1711,7 +1751,7 @@
         return;
       }
       for (const item of files) {
-        window.open(`/api/download?bucket=${encodeURIComponent(state.currentBucket)}&key=${encodeURIComponent(item.key)}`, "_blank");
+        triggerDownload(`/api/download?bucket=${encodeURIComponent(state.currentBucket)}&key=${encodeURIComponent(item.key)}&download=1`);
       }
     }
 
@@ -1917,6 +1957,13 @@
         if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) {
           await loadObjects(true);
         }
+      });
+
+      // Firefox only accepts a drop when dragenter is cancelled as well.
+      $("#table-wrap").addEventListener("dragenter", (e) => {
+        if (!(state.dragKind === "internal" || hasExternalDropPayload(e.dataTransfer))) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = state.dragKind === "internal" ? "move" : "copy";
       });
 
       $("#table-wrap").addEventListener("dragover", (e) => {

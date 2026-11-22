@@ -19,6 +19,9 @@ test("normalizeKey blocks traversal and leading slashes", () => {
   assert.throws(() => normalizeKey("../folder/file.txt"), /Invalid key/);
   assert.equal(normalizeKey("/artists/track.mp3"), "artists/track.mp3");
   assert.equal(sanitizePrefix("/music/album/"), "music/album/");
+  assert.equal(sanitizePrefix("dir"), "dir", "a prefix without a trailing slash keeps its shape");
+  assert.equal(sanitizePrefix("//"), "", "slash-only input collapses to the root");
+  assert.equal(sanitizePrefix("dir///"), "dir/", "a trailing slash run collapses to one");
 });
 
 test("validateObjectKey accepts safe S3 keys", () => {

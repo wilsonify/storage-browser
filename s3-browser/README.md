@@ -159,8 +159,8 @@ Vars in your local `wrangler.jsonc`, copied from [wrangler.example.jsonc](wrangl
 | `ACCESS_TEAM_DOMAIN` | Your Access team domain, e.g. `my-team.cloudflareaccess.com`. Empty = fail closed. |
 | `ACCESS_AUD` | The Access application's Application Audience (AUD) tag. Empty = fail closed. |
 | `ALLOWED_ORIGINS` | Comma-separated exact browser origins allowed to read API responses. Empty denies all cross-origin use; the bundled UI is same-origin and needs no entry. |
-| `S3_BROWSER_BUCKET` | Default bucket. |
-| `ALLOWED_BUCKETS` | Comma-separated bucket allow-list. |
+| `S3_BROWSER_BUCKET` | Default bucket, as a single name **string**. |
+| `ALLOWED_BUCKETS` | Comma-separated allow-list **string**. Empty exposes every bucket the IAM key can reach. Both values must be strings: a JSON array makes every API request fail with `400 Invalid bucket: bucket must be a string`. |
 | `AWS_REGION` | Optional S3 region; defaults to `us-east-1`. |
 
 Secrets (never commit these):
@@ -170,8 +170,9 @@ npx wrangler secret put AWS_ACCESS_KEY_ID
 npx wrangler secret put AWS_SECRET_ACCESS_KEY
 ```
 
-Use a least-privilege IAM key limited to the buckets in `ALLOWED_BUCKETS`; the
-Worker can perform any S3 action that key permits.
+Use a least-privilege IAM key limited to the buckets you expose. With
+`ALLOWED_BUCKETS` empty, the IAM policy is the only limit; the Worker can perform
+any S3 action that key permits.
 
 CORS is not authentication. It only decides which browser origins may read
 responses, and only configured origins ever receive an

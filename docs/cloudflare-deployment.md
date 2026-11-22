@@ -48,10 +48,15 @@ The values you must review:
 | `name` | Worker name; becomes `https://<name>.<subdomain>.workers.dev` |
 | `compatibility_flags: ["nodejs_compat"]` | **Keep.** `@aws-sdk/client-s3` needs the Node compatibility layer |
 | `assets.directory` | Keep `"./"`. [.assetsignore](../s3-browser/.assetsignore) makes only `index.html` and `assets/` public |
-| `S3_BROWSER_BUCKET` | Default bucket the UI opens |
-| `ALLOWED_BUCKETS` | Comma-separated allow-list; keep it to what you actually expose |
+| `S3_BROWSER_BUCKET` | Default bucket the UI opens. A single bucket name **string** |
+| `ALLOWED_BUCKETS` | Comma-separated allow-list **string**. Empty exposes every bucket the IAM key can reach; keep it to what you actually expose |
 | `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` | Leave empty for the first deploy; filled in step 4 |
 | `ALLOWED_ORIGINS` | Leave empty unless a separate origin must call the API. Empty denies cross-origin use |
+
+Every value in `vars` must be a JSON **string**. JSON arrays or objects are not
+supported: Wrangler passes them through as-is, and the Worker then answers every
+API request with `400 Invalid bucket: bucket must be a string`. To expose all
+buckets, use `"ALLOWED_BUCKETS": ""` — not an array of names.
 
 `AWS_REGION` is optional (default `us-east-1`). Add it as a var if your bucket
 lives elsewhere.

@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { join } from "node:path";
 
 function quoteArg(arg) {
   if (/^[a-zA-Z0-9_./:-]+$/.test(arg)) return arg;
@@ -39,7 +40,7 @@ function forceKillProcessTree(pid) {
   if (!pid || pid <= 0) return;
 
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+    spawnSync(join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], {
       stdio: "pipe",
       timeout: 10000,
       windowsHide: true,

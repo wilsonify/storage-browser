@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -6,14 +7,14 @@ function nowIso() {
 }
 
 function createId() {
-  return `op_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  return `op_${randomUUID()}`;
 }
 
 export class OperationStore {
   constructor(filePath) {
     this.filePath = filePath;
     this.operations = [];
-    this.pendingWrite = Promise.resolve();
+    this.pendingWrite = null;
   }
 
   async init() {
@@ -186,7 +187,8 @@ export class OperationStore {
   }
 
   async persist() {
-    this.pendingWrite = this.pendingWrite.then(async () => {
+    const previous = this.pendingWrite ?? Promise.resolve();
+    this.pendingWrite = previous.then(async () => {
       const tempPath = join(dirname(this.filePath), `.operations-${Date.now()}.tmp`);
       const payload = JSON.stringify({ operations: this.operations }, null, 2);
       await writeFile(tempPath, payload, "utf-8");
